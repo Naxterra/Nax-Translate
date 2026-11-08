@@ -36,6 +36,7 @@ public static class Loc
     public static string StatusChatGptTimeout => En ? "ChatGPT translation timed out. Please try again." : "Zeitüberschreitung bei der ChatGPT-Übersetzung. Bitte erneut versuchen.";
     public static string StatusChatGptFailed => En ? "ChatGPT could not complete the translation. Check your sign-in and usage limit, then try again." : "ChatGPT konnte die Übersetzung nicht abschließen. Anmeldung und Nutzungslimit prüfen und erneut versuchen.";
     public static string StatusChatGptUnexpectedTool => En ? "ChatGPT tried to use a tool. The translation was rejected." : "ChatGPT wollte ein Werkzeug verwenden. Die Übersetzung wurde verworfen.";
+    public static string StatusChatGptIsolationFailed => En ? "The ChatGPT backend could not be isolated. No text was sent." : "Das ChatGPT-Backend konnte nicht isoliert werden. Es wurde kein Text verschickt.";
     public static string StatusClaudeChecking => En ? "Checking the Claude Code sign-in…" : "Anmeldung bei Claude Code wird geprüft…";
     public static string StatusClaudeConnected(string? plan) =>
         plan != null

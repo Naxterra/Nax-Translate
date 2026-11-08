@@ -40,6 +40,7 @@ public sealed class ChatGptCliTests
             ["OPENAI_API_KEY"] = "test-secret", ["openai_base_url"] = "https://example.invalid",
             ["AZURE_OPENAI_API_KEY"] = "test-secret", ["CODEX_API_KEY"] = "test-secret",
             ["CODEX_HOME"] = "parent-context", ["CODEX_THREAD_ID"] = "parent-thread", ["PATH"] = "bin",
+            ["RUST_LOG"] = "debug", ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://example.invalid",
         };
         ChatGptCli.PrepareEnvironment(env);
         Assert.Equal(["PATH"], env.Keys.ToArray());

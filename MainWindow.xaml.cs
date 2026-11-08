@@ -47,7 +47,7 @@ public partial class MainWindow : Window
         _cfg = config;
         _http = http;
         _claudeSession = claudeSession ?? new();
-        _chatGpt = chatGpt ?? new ChatGptCli();
+        _chatGpt = chatGpt ?? new ChatGptServer();
         InitializeComponent();
 
         // Timers must be created before setting combo selections (which fire events)
@@ -61,6 +61,7 @@ public partial class MainWindow : Window
             // Replaces a waiting Claude process once it is too old, so the next translation
             // still finds one ready instead of starting the tool then.
             if (_claude && _cfg.ClaudeConnected) _claudeSession.WarmUp(_cfg.ClaudeModel);
+            if (_chatgpt && _cfg.ChatGptConnected) _chatGpt.WarmUp();
             await RefreshTokenAsync();
         };
         _refresh.Start();
@@ -289,7 +290,7 @@ public partial class MainWindow : Window
         _cfg.ChatGptConnected = true;
         _cfg.Save();
         UpdateBadge();
-        if (_chatgpt) { InvalidateTranslation(); _debounce.Stop(); _debounce.Start(); }
+        if (_chatgpt) { _chatGpt.WarmUp(); InvalidateTranslation(); _debounce.Stop(); _debounce.Start(); }
     }
 
     void ChatGptDisconnect_Click(object s, RoutedEventArgs e)
@@ -298,6 +299,7 @@ public partial class MainWindow : Window
         _cfg.ChatGptConnected = false;
         _cfg.Save();
         if (_chatgpt) { InvalidateTranslation(); _debounce.Stop(); }
+        _chatGpt.Stop();
         UpdateBadge();
         SetStatus(Loc.StatusChatGptDisconnectedNow);
     }
@@ -554,6 +556,7 @@ public partial class MainWindow : Window
         Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         CancelRunningTranslation();
         _claudeSession.Dispose();
+        _chatGpt.Stop();
     }
 
     /// <summary>
@@ -664,6 +667,8 @@ public partial class MainWindow : Window
         // DeepL picked, or Claude disconnected, no Claude process is kept around.
         if (_claude && _cfg.ClaudeConnected) _claudeSession.WarmUp(_cfg.ClaudeModel);
         else                                 _claudeSession.DropSpare();
+        if (_chatgpt && _cfg.ChatGptConnected) _chatGpt.WarmUp();
+        else _chatGpt.Stop();
         // The first switch to Claude after start checks the sign-in, so the badge shows the plan.
         if (IsLoaded && _claude && _cfg.ClaudeConnected && _claudeBadge.Length == 0)
             _ = CheckClaudeAsync(quiet: true);

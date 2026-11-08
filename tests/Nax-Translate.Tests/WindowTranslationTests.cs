@@ -73,6 +73,9 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
     sealed class FakeChatGpt : IChatGptClient
     {
         public readonly List<PendingChatGpt> Requests = [];
+        public int Warmups, Stops;
+        public void WarmUp() => Warmups++;
+        public void Stop() => Stops++;
         public Task<bool> Auth = Task.FromResult(true);
         public Task<bool> CheckAuthAsync(CancellationToken ct = default) => Auth.WaitAsync(ct);
         public Task<(string Text, string? DetectedLang)> TranslateAsync(string text, string target,
@@ -426,6 +429,26 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.Empty(h.Requests);
         Assert.Empty(h.ClaudeProcesses);
         Assert.Equal(Loc.StatusChatGptDisconnected, h.Window.StatusText.Text);
+    });
+
+    [Fact]
+    public Task chatgpt_backend_lifecycle_follows_selection_disconnect_and_exit() => dispatcher.Run(() =>
+    {
+        using var h = new Harness(chatgpt: true);
+        Assert.True(h.ChatGpt.Warmups > 0);
+        var stops = h.ChatGpt.Stops;
+        h.Window.ClassicRb.IsChecked = true;
+        Assert.Equal(++stops, h.ChatGpt.Stops);
+        var warmups = h.ChatGpt.Warmups;
+        h.Window.ChatGptRb.IsChecked = true;
+        Assert.Equal(warmups + 1, h.ChatGpt.Warmups);
+        h.Window.MenuItemChatGptDisconnect.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Assert.Equal(++stops, h.ChatGpt.Stops);
+        h.Window.StopBackgroundWork();
+        Assert.Equal(++stops, h.ChatGpt.Stops);
+        h.Window.StopBackgroundWork();
+        Assert.Equal(stops, h.ChatGpt.Stops);
+        return Task.CompletedTask;
     });
 
     [Fact]
