@@ -62,8 +62,11 @@ public sealed class ChatGptServer : IChatGptClient
             // The next connection reads the MCP servers of the current Codex configuration again,
             // so a server removed in the meantime is no longer switched off by name.
             _disabledServers.Clear();
+            // Cancelled inside the same lock, so no request can find the cache emptied while its own
+            // token still looks valid and then store an answer from before the disconnect. The
+            // callbacks this runs only cancel waits; none of them waits for this lock elsewhere.
+            previous.Cancel();
         }
-        previous.Cancel();
         connection?.Dispose();
         // The token may still be in use by an interrupted request, so do not dispose its source here.
     }
@@ -165,6 +168,9 @@ public sealed class ChatGptServer : IChatGptClient
         return result.TryGetProperty("account", out var account) && account.ValueKind == JsonValueKind.Object
             && account.TryGetProperty("type", out var type) && type.GetString() == "chatgpt";
     }
+
+    static bool WillRetry(JsonElement parameters) =>
+        parameters.TryGetProperty("willRetry", out var retry) && retry.ValueKind == JsonValueKind.True;
 
     /// <summary>
     /// Waits for the one connection to be free. Running out of time while another request still
@@ -273,7 +279,11 @@ public sealed class ChatGptServer : IChatGptClient
                     }
                     return result;
                 }
-                if (method == "error") throw new Exception(Loc.StatusChatGptFailed);
+                // Codex's protocol (ErrorNotification) always names the thread and says whether it
+                // retries by itself, for example after a dropped stream. Such an error is not the
+                // end of the turn; only a final error, or the thread being closed, is.
+                if (method == "error" && !WillRetry(p)) throw new Exception(Loc.StatusChatGptFailed);
+                if (method == "thread/closed") throw new Exception(Loc.StatusChatGptFailed);
             }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && !generation.IsCancellationRequested)

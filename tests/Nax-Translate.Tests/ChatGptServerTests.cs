@@ -23,6 +23,9 @@ public sealed class ChatGptServerTests
         public bool HasExited { get; private set; }
         public bool SignedIn = true, Ephemeral = true, Hang, Failed, IncludeWrongThread;
         public TaskCompletionSource? HoldThreadStart;
+        public bool? ErrorFirst;      // an error event before the answer, with this willRetry value
+        public bool CloseThread;      // the thread is closed instead of the turn finishing
+        public Action? OnUnsubscribe; // runs when the finished thread is unloaded, just before caching
         public string? ToolKind;
         public string Reply = "lang: DE\nhonor";
         string _thread = "";
@@ -52,8 +55,12 @@ public sealed class ChatGptServerTests
                 case "turn/start":
                     if (IncludeWrongThread)
                         Events.Enqueue(Json(new { method = "item/completed", @params = new { threadId = "old-thread", item = new { type = "agentMessage", text = "old answer" } } }));
-                    if (!Hang)
+                    if (CloseThread)
+                        Events.Enqueue(Json(new { method = "thread/closed", @params = new { threadId = _thread } }));
+                    else if (!Hang)
                     {
+                        if (ErrorFirst is { } willRetry)
+                            Events.Enqueue(Json(new { method = "error", @params = new { threadId = _thread, turnId = "turn", willRetry, error = new { message = "stream disconnected" } } }));
                         if (ToolKind != null)
                             Events.Enqueue(Json(new { method = "item/started", @params = new { threadId = _thread, item = new { type = ToolKind } } }));
                         Events.Enqueue(Json(new { method = "item/completed", @params = new { threadId = _thread, item = new { type = "agentMessage", text = Reply } } }));
@@ -61,6 +68,9 @@ public sealed class ChatGptServerTests
                     }
                     Started.TrySetResult();
                     return Task.FromResult(Json(new { turn = new { id = "turn" } }));
+                case "thread/unsubscribe":
+                    OnUnsubscribe?.Invoke();
+                    return Task.FromResult(Json(new { }));
                 default: return Task.FromResult(Json(new { }));
             }
         }
@@ -411,6 +421,63 @@ public sealed class ChatGptServerTests
             client.Stop();
             await Translate(client, "another text");
             Assert.Empty(names[^1]);
+        }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public async Task error_that_codex_retries_by_itself_does_not_end_the_translation()
+    {
+        var connection = new Connection { ErrorFirst = true, Reply = "lang: DE\nhonour" };
+        var client = new ChatGptServer(_ => connection);
+        try { Assert.Equal(("honour", "DE"), await Translate(client)); }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public async Task final_error_ends_the_translation_at_once()
+    {
+        var connection = new Connection { ErrorFirst = false };
+        var client = new ChatGptServer(_ => connection);
+        try { await Assert.ThrowsAsync<Exception>(() => Translate(client)); }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public async Task closed_thread_ends_the_translation_instead_of_waiting_for_timeout()
+    {
+        var connection = new Connection { CloseThread = true };
+        var client = new ChatGptServer(_ => connection, TimeSpan.FromSeconds(30));
+        try
+        {
+            var started = DateTime.UtcNow;
+            await Assert.ThrowsAsync<Exception>(() => Translate(client));
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(5), "the closed thread must not wait for the timeout");
+        }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public async Task answer_finishing_during_disconnect_is_not_kept_for_later()
+    {
+        var made = new List<Connection>();
+        ChatGptServer? client = null;
+        client = new ChatGptServer(_ =>
+        {
+            var c = new Connection();
+            // The first answer finishes just as ChatGPT is disconnected: Stop runs between the
+            // thread being unloaded and the answer being stored.
+            if (made.Count == 0) c.OnUnsubscribe = () => client!.Stop();
+            made.Add(c);
+            return c;
+        });
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Translate(client, "same text"));
+            // After reconnecting, the same text must go to ChatGPT again instead of coming from a cache
+            // that outlived the disconnect.
+            await Translate(client, "same text");
+            Assert.Contains(made[^1].Calls, c => c.Method == "turn/start");
         }
         finally { client.Stop(); }
     }
