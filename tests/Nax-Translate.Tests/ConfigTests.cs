@@ -21,6 +21,20 @@ public sealed class ConfigTests : IDisposable
         Assert.Equal(ClaudeCli.DefaultModel, cfg.ClaudeModel);
     }
 
+    [Fact]
+    public void stored_old_sonnet_default_moves_to_haiku_once_and_later_choice_is_kept()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(ConfigPath, "{\"claude_model\":\"sonnet\"}");
+        var cfg = Config.Load(ConfigPath);
+        Assert.Equal("haiku", cfg.ClaudeModel);
+
+        // Sonnet picked in the menu afterwards must survive a restart.
+        cfg.ClaudeModel = "sonnet";
+        cfg.Save();
+        Assert.Equal("sonnet", Config.Load(ConfigPath).ClaudeModel);
+    }
+
     [Theory]
     [InlineData("{}", "gpt-6-luna")]
     [InlineData("{\"chatgpt_model\":\"\"}", "gpt-6-luna")]

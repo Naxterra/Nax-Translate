@@ -242,7 +242,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
             case "source": h.Window.SrcCombo.SelectedItem = "Englisch"; break;
             case "target": h.Window.TgtCombo.SelectedItem = "Türkisch"; break;
             case "engine": h.Window.ClassicRb.IsChecked = true; break;
-            case "text": h.Window.SrcBox.Text = "A different sentence"; break;
+            case "text": h.Window.SrcBox.Text = "Other words"; break; // a typed change, shorter than a paste
             case "short text": h.Window.SrcBox.Text = "hi"; break;
             case "over limit": h.Window.SrcBox.Text = new string('a', DeepLApi.MaxChars + 1); break;
             case "disconnect":
@@ -465,4 +465,41 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.Equal(Loc.StatusChatGptDisconnectedNow, h.Window.StatusText.Text);
         Assert.Empty(h.ChatGpt.Requests);
     });
+
+    [Fact]
+    public Task text_already_in_target_language_switches_target_without_second_chatgpt_request() => dispatcher.Run(async () =>
+    {
+        // German text with German as target: the request already asked for English in that case,
+        // so the answer is shown and only the dropdown changes. A second request would double the wait.
+        using var h = new Harness(chatgpt: true);
+        h.Window.TgtCombo.SelectedItem = "Deutsch";
+        var run = h.Start("Hallo Welt");
+        var request = Assert.Single(h.ChatGpt.Requests);
+        request.Answer.SetResult(("Hello world", "DE"));
+        await run;
+        Assert.Single(h.ChatGpt.Requests);
+        Assert.Equal("Hello world", h.Window.TgtBox.Text);
+        Assert.Equal("Englisch (US)", h.Window.TgtCombo.SelectedItem);
+    });
+
+    [Fact]
+    public Task pasted_text_is_translated_without_waiting_for_typing_pause() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        // Setting the whole text at once is what a paste does.
+        h.Window.SrcBox.Text = "This sentence was pasted in one piece.";
+        var request = Assert.Single(h.ChatGpt.Requests);
+        request.Answer.SetResult(("Dieser Satz wurde am Stück eingefügt.", "EN"));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal("Dieser Satz wurde am Stück eingefügt.", h.Window.TgtBox.Text);
+    });
+
+    [Fact]
+    public void single_typed_characters_wait_for_typing_pause_but_paste_does_not()
+    {
+        Assert.False(MainWindow.IsPasteLike([1]));
+        Assert.False(MainWindow.IsPasteLike([MainWindow.PasteLikeChars - 1]));
+        Assert.True(MainWindow.IsPasteLike([MainWindow.PasteLikeChars]));
+        Assert.True(MainWindow.IsPasteLike([1, 250]));
+    }
 }

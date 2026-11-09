@@ -24,6 +24,8 @@ public static class Loc
     public static string MenuLogout      => En ? "Log out of DeepL"                        : "Von DeepL abmelden";
     public static string MenuClaudeConnect    => En ? "Connect Claude"                     : "Mit Claude verbinden";
     public static string MenuClaudeDisconnect => En ? "Disconnect Claude"                  : "Claude trennen";
+    public static string MenuClaudeFast       => En ? "Claude: fast (Haiku)"              : "Claude: schnell (Haiku)";
+    public static string MenuClaudeCareful    => En ? "Claude: more careful (Sonnet)"     : "Claude: genauer (Sonnet)";
     public static string MenuChatGptConnect => En ? "Connect ChatGPT" : "Mit ChatGPT verbinden";
     public static string MenuChatGptDisconnect => En ? "Disconnect ChatGPT" : "ChatGPT trennen";
     public static string StatusChatGptChecking => En ? "Checking the ChatGPT sign-in…" : "ChatGPT-Anmeldung wird geprüft…";

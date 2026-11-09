@@ -45,6 +45,8 @@ public class Config
     [JsonPropertyName("engine")]    public string  Engine   { get; set; } = "classic";
     // The model the Claude engine asks for, as an alias such as "sonnet" or "haiku".
     [JsonPropertyName("claude_model")] public string ClaudeModel { get; set; } = ClaudeCli.DefaultModel;
+    // Set once the Claude model has been moved to the faster default, see Load.
+    [JsonPropertyName("claude_model_reviewed")] public bool ClaudeModelReviewed { get; set; }
     // The tone of Claude translations: "natural", "formal" or "informal".
     [JsonPropertyName("claude_tone")]  public string ClaudeTone  { get; set; } = ClaudeCli.ToneNatural;
     // Whether Claude is connected. While it is not, nothing is sent to Claude and no Claude Code
@@ -75,6 +77,15 @@ public class Config
         catch { cfg = new(); }
         cfg.FilePath = path;
         cfg.ChatGptModel = ChatGptCli.NormalizeModel(cfg.ChatGptModel);
+        // Up to 1.4.0 every settings file stored Sonnet, the old default, because there was no way
+        // to pick a model. Sonnet now takes about three times as long as Haiku for a sentence, so
+        // that stored default moves to Haiku once. A model picked in the menu afterwards is kept.
+        if (!cfg.ClaudeModelReviewed)
+        {
+            if (string.Equals(cfg.ClaudeModel, "sonnet", StringComparison.OrdinalIgnoreCase))
+                cfg.ClaudeModel = ClaudeCli.DefaultModel;
+            cfg.ClaudeModelReviewed = true;
+        }
 
         cfg.DlAccess     = Unprotect(cfg.DlAccessProtected);
         cfg.RefreshToken = Unprotect(cfg.RefreshTokenProtected);

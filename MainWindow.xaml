@@ -86,6 +86,8 @@
                         <Separator/>
                         <MenuItem x:Name="MenuItemClaudeConnect"    Header="Mit Claude verbinden" Click="ClaudeConnect_Click"/>
                         <MenuItem x:Name="MenuItemClaudeDisconnect" Header="Claude trennen"       Click="ClaudeDisconnect_Click"/>
+                        <MenuItem x:Name="MenuItemClaudeFast"    Header="Claude: schnell (Haiku)"  IsCheckable="True" Click="ClaudeModel_Click"/>
+                        <MenuItem x:Name="MenuItemClaudeCareful" Header="Claude: genauer (Sonnet)" IsCheckable="True" Click="ClaudeModel_Click"/>
                         <MenuItem x:Name="MenuItemChatGptConnect" Header="Mit ChatGPT verbinden" Click="ChatGptConnect_Click"/>
                         <MenuItem x:Name="MenuItemChatGptDisconnect" Header="ChatGPT trennen" Click="ChatGptDisconnect_Click"/>
                         <Separator/>

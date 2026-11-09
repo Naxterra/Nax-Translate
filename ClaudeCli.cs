@@ -45,7 +45,7 @@ public delegate IClaudeProcess ClaudeProcessFactory(string model);
 /// </summary>
 public static class ClaudeCli
 {
-    public const string DefaultModel = "sonnet";
+    public const string DefaultModel = "haiku";
 
     const string SystemPrompt =
         "You are a translation engine. The user message names the target language and, if known, " +
@@ -116,10 +116,30 @@ public static class ClaudeCli
     };
 
     /// <summary>The user message for one translation.</summary>
+    /// <summary>
+    /// The language to translate into when the text turns out to be in the target language already,
+    /// the same rule as <see cref="DeepLApi.AutoTarget"/>. Putting it into the request saves a second
+    /// request, which would double the wait. None when the source picked matches the target, because
+    /// then the same language on both sides is what was asked for.
+    /// </summary>
+    internal static string? FallbackTarget(string tgtLang, string srcLang)
+    {
+        var target = tgtLang.Split('-')[0];
+        if (srcLang != "auto" && srcLang.Split('-')[0].Equals(target, StringComparison.OrdinalIgnoreCase)) return null;
+        return DeepLApi.AutoTarget(target, tgtLang);
+    }
+
     internal static string BuildPrompt(string text, string tgtLang, string srcLang, string? tone = null)
     {
         var sb = new StringBuilder();
-        sb.Append("Target language: ").Append(NameOf(tgtLang)).Append('\n');
+        // With a fallback the target depends on the text, so it is stated as one rule. Mentioned as
+        // an afterthought, small models kept the first target and only polished the text.
+        if (FallbackTarget(tgtLang, srcLang) is { } fallback)
+            sb.Append("Target language: ").Append(NameOf(fallback)).Append(" if the text is written in ")
+              .Append(NameOf(tgtLang.Split('-')[0])).Append(", otherwise ").Append(NameOf(tgtLang))
+              .Append(". Never return the text in the language it is written in.\n");
+        else
+            sb.Append("Target language: ").Append(NameOf(tgtLang)).Append('\n');
         if (srcLang != "auto")
             sb.Append("Source language: ").Append(NameOf(srcLang)).Append('\n');
         sb.Append(ToneInstruction(tone ?? ToneNatural)).Append('\n');

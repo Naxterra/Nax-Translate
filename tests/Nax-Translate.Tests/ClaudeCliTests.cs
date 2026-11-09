@@ -452,6 +452,29 @@ public class ClaudeCliTests
     }
 
     [Fact]
+    public void request_names_english_for_german_text_when_german_is_target()
+    {
+        var prompt = ClaudeCli.BuildPrompt("Hallo Welt", "de", "auto");
+        Assert.Contains("Target language: English (American) if the text is written in German, otherwise German.", prompt);
+    }
+
+    [Fact]
+    public void german_on_both_sides_on_purpose_gets_no_other_target()
+    {
+        var prompt = ClaudeCli.BuildPrompt("Hallo Welt", "de", "de");
+        Assert.Contains("Target language: German\n", prompt);
+        Assert.DoesNotContain("otherwise", prompt);
+    }
+
+    [Fact]
+    public void wrong_fixed_source_still_gets_other_target_for_text_in_target_language()
+    {
+        Assert.Equal("en-US", ClaudeCli.FallbackTarget("de", "en"));
+        Assert.Equal("de", ClaudeCli.FallbackTarget("tr", "auto"));
+        Assert.Null(ClaudeCli.FallbackTarget("en-GB", "en"));
+    }
+
+    [Fact]
     public async Task text_goes_to_claude_as_json_message_with_target_language_named()
     {
         var f = Replies(Answer("lang: DE\nHello"));
@@ -459,7 +482,7 @@ public class ClaudeCliTests
         await s.TranslateAsync("Hallo \"Welt\" & <tag>\nZeile zwei", "en-GB", "de");
         using var doc = JsonDocument.Parse(f.Started[0].Written.Single());
         var prompt = doc.RootElement.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString();
-        Assert.Contains("Target language: English (British)", prompt);
+        Assert.Contains("otherwise English (British)", prompt);
         Assert.Contains("Source language: German", prompt);
         Assert.Contains("Hallo \"Welt\" & <tag>\nZeile zwei", prompt);
         // The text must never end up on the command line, where quotes could break the call.

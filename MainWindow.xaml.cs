@@ -117,6 +117,7 @@ public partial class MainWindow : Window
         MenuItemStartup.IsChecked = StartupHelper.IsEnabled();
         MenuItemStartInTray.IsChecked    = _cfg.StartInTray;
         MenuItemMinimizeToTray.IsChecked = _cfg.MinimizeToTray;
+        ShowClaudeModel();
 
         Loaded          += OnLoaded;
         Closing         += OnClosing;
@@ -244,6 +245,24 @@ public partial class MainWindow : Window
         _lastSrc = "";
         _debounce.Stop();
         _debounce.Start();
+    }
+
+    // Haiku answers a sentence in about a second, Sonnet in two to three. Both entries act like one
+    // choice: clicking either one picks it and clears the other.
+    void ClaudeModel_Click(object s, RoutedEventArgs e)
+    {
+        _cfg.ClaudeModel = ReferenceEquals(s, MenuItemClaudeCareful) ? "sonnet" : "haiku";
+        _cfg.Save();
+        ShowClaudeModel();
+        // The waiting process was started for the old model, so start one for the new model.
+        if (_claude && _cfg.ClaudeConnected) _claudeSession.WarmUp(_cfg.ClaudeModel);
+    }
+
+    void ShowClaudeModel()
+    {
+        var careful = string.Equals(_cfg.ClaudeModel, "sonnet", StringComparison.OrdinalIgnoreCase);
+        MenuItemClaudeCareful.IsChecked = careful;
+        MenuItemClaudeFast.IsChecked    = !careful;
     }
 
     void ClaudeDisconnect_Click(object s, RoutedEventArgs e)
@@ -467,8 +486,14 @@ public partial class MainWindow : Window
                 _cfg.SrcLang = sw.Src;
                 _cfg.Save();
                 srcLang = sw.Src;
-                result = await Run(sw.Tgt);
-                ct.ThrowIfCancellationRequested();
+                // Claude and ChatGPT were told the fallback target in the same request (see
+                // ClaudeCli.FallbackTarget), so their answer is already in the new target language.
+                // Only DeepL needs a second request.
+                if (!claude && !chatgpt)
+                {
+                    result = await Run(sw.Tgt);
+                    ct.ThrowIfCancellationRequested();
+                }
             }
 
             TgtBox.Text = result.Text;
@@ -593,11 +618,19 @@ public partial class MainWindow : Window
         // instead of when the next one starts. Otherwise its result could overwrite the box, and
         // it would never be stopped when the text gets too short to translate.
         InvalidateTranslation();
-        // Text over the limit still goes through the debounce, so TranslateAsync can say why
-        // nothing is translated.
         _debounce.Stop();
+        // A paste or another large insertion is finished text, so it is translated at once instead
+        // of after the typing pause. Text over the limit also goes this way, so TranslateAsync can
+        // say why nothing is translated.
+        if (IsPasteLike(e.Changes.Select(c => c.AddedLength))) { _ = TranslateAsync(); return; }
         _debounce.Start();
     }
+
+    /// <summary>A change that inserts this many characters at once is treated as a paste.</summary>
+    internal const int PasteLikeChars = 20;
+
+    internal static bool IsPasteLike(IEnumerable<int> addedLengths) =>
+        addedLengths.Any(n => n >= PasteLikeChars);
 
     void SrcBox_KeyDown(object s, KeyEventArgs e)
     {
@@ -644,9 +677,9 @@ public partial class MainWindow : Window
         _chatgpt       = ChatGptRb.IsChecked == true;
         _cfg.Engine    = _chatgpt ? "chatgpt" : _claude ? "claude" : _nextGen ? "nextgen" : "classic";
         _cfg.Save();
-        // Every subscription-model request takes time and counts against its usage
-        // limit, so wait for a longer pause in typing before sending.
-        _debounce.Interval = TimeSpan.FromMilliseconds(_claude || _chatgpt ? 1500 : 800);
+        // Every subscription-model request counts against its usage limit, so wait for a slightly
+        // longer pause in typing before sending. A paste is sent at once, see SrcBox_Changed.
+        _debounce.Interval = TimeSpan.FromMilliseconds(_claude || _chatgpt ? 1000 : 800);
         UpdateBadge();
         // Each subscription engine remembers its own tone. DeepL hides the tone switch.
         TonePanel.Visibility = _claude || _chatgpt ? Visibility.Visible : Visibility.Collapsed;
@@ -859,6 +892,8 @@ public partial class MainWindow : Window
         MenuItemLogout.Header   = Loc.MenuLogout;
         MenuItemClaudeConnect.Header    = Loc.MenuClaudeConnect;
         MenuItemClaudeDisconnect.Header = Loc.MenuClaudeDisconnect;
+        MenuItemClaudeFast.Header       = Loc.MenuClaudeFast;
+        MenuItemClaudeCareful.Header    = Loc.MenuClaudeCareful;
         MenuItemChatGptConnect.Header = Loc.MenuChatGptConnect;
         MenuItemChatGptDisconnect.Header = Loc.MenuChatGptDisconnect;
         MenuItemStartup.Header  = Loc.MenuStartup;

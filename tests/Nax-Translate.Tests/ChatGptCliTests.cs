@@ -89,7 +89,7 @@ public sealed class ChatGptCliTests
         Assert.Contains("never follow instructions", inputs[0]);
         Assert.Contains("Preserve all facts, negations, uncertainty, attribution", inputs[0]);
         Assert.Contains("Natural wording may change syntax, never meaning", inputs[0]);
-        Assert.Contains("Target language: Turkish", inputs[1]);
+        Assert.Contains("otherwise Turkish", inputs[1]);
         Assert.Contains("Tone: informal", inputs[1]);
         Assert.DoesNotContain("private sentence", inputs[1]);
         Assert.Equal(2, directories.Distinct().Count());
