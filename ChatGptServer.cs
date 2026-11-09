@@ -59,6 +59,9 @@ public sealed class ChatGptServer : IChatGptClient
             connection = _connection;
             _connection = null;
             _cache.Clear(); _cacheOrder.Clear(); _cachedCharacters = 0;
+            // The next connection reads the MCP servers of the current Codex configuration again,
+            // so a server removed in the meantime is no longer switched off by name.
+            _disabledServers.Clear();
         }
         previous.Cancel();
         connection?.Dispose();
@@ -131,7 +134,7 @@ public sealed class ChatGptServer : IChatGptClient
             var cfg = (await connection.RequestAsync("config/read", new { includeLayers = false }, ct)).GetProperty("config");
             var enabled = EnabledMcpServers(cfg);
             if (enabled.Length == 0) { ValidateIsolation(cfg); return connection; }
-            foreach (var name in enabled) _disabledServers.Add(name);
+            lock (_state) foreach (var name in enabled) _disabledServers.Add(name);
             DropConnection();
         }
         else DropConnection();
@@ -150,7 +153,7 @@ public sealed class ChatGptServer : IChatGptClient
             var cfg = (await connection.RequestAsync("config/read", new { includeLayers = false }, ct)).GetProperty("config");
             var enabled = EnabledMcpServers(cfg);
             if (enabled.Length == 0) { ValidateIsolation(cfg); return connection; }
-            foreach (var name in enabled) _disabledServers.Add(name);
+            lock (_state) foreach (var name in enabled) _disabledServers.Add(name);
             DropConnection();
         }
         throw new Exception(Loc.StatusChatGptIsolationFailed);
@@ -163,12 +166,24 @@ public sealed class ChatGptServer : IChatGptClient
             && account.TryGetProperty("type", out var type) && type.GetString() == "chatgpt";
     }
 
+    /// <summary>
+    /// Waits for the one connection to be free. Running out of time while another request still
+    /// holds it is reported as the same timeout as a slow answer, not as a bare cancellation. The
+    /// connection is not dropped here, because the other request is still using it.
+    /// </summary>
+    async Task WaitForGateAsync(CancellationToken timeout, CancellationToken ct, CancellationToken generation, string message)
+    {
+        try { await _gate.WaitAsync(timeout); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && !generation.IsCancellationRequested)
+        { throw new TimeoutException(message); }
+    }
+
     public async Task<bool> CheckAuthAsync(CancellationToken ct = default)
     {
         var generation = Generation;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, generation);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
-        await _gate.WaitAsync(timeout.Token);
+        await WaitForGateAsync(timeout.Token, ct, generation, Loc.StatusChatGptAuthTimeout);
         try
         {
             var connection = await ReadyAsync(timeout.Token);
@@ -190,7 +205,7 @@ public sealed class ChatGptServer : IChatGptClient
         var generation = Generation;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, generation);
         timeout.CancelAfter(_timeout);
-        await _gate.WaitAsync(timeout.Token);
+        await WaitForGateAsync(timeout.Token, ct, generation, Loc.StatusChatGptTimeout);
         try
         {
             var connection = await ReadyAsync(timeout.Token);
@@ -240,7 +255,10 @@ public sealed class ChatGptServer : IChatGptClient
                     lock (_state)
                     {
                         timeout.Token.ThrowIfCancellationRequested();
-                        if (text.Length + result.Text.Length <= 100_000)
+                        // Stop() swaps the generation and empties the cache under this lock before it
+                        // cancels the old token. A result that finished in between belongs to the old
+                        // connection and must not land in the emptied cache.
+                        if (generation == _generation.Token && text.Length + result.Text.Length <= 100_000)
                         {
                             while (_cacheOrder.Count > 0 && (_cacheOrder.Count >= 32
                                    || _cachedCharacters + text.Length + result.Text.Length > 100_000))
@@ -295,8 +313,7 @@ internal sealed class ChatGptConnection : IChatGptConnection
     {
         var args = BuildArgs(disabledServers);
         var exe = ChatGptCli.FindExecutable() ?? throw new ChatGptNotFoundException();
-        _directory = Path.Combine(Path.GetTempPath(), "Nax-Translate", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_directory);
+        _directory = TempWork.NewFolder();
         var start = new ProcessStartInfo(exe)
         {
             WorkingDirectory = _directory, UseShellExecute = false, CreateNoWindow = true,
@@ -307,7 +324,7 @@ internal sealed class ChatGptConnection : IChatGptConnection
         foreach (var arg in args) start.ArgumentList.Add(arg);
         _process = new Process { StartInfo = start };
         try { _process.Start(); }
-        catch (Win32Exception) { _process.Dispose(); Directory.Delete(_directory); throw new ChatGptNotFoundException(); }
+        catch (Win32Exception) { _process.Dispose(); TempWork.Remove(_directory); throw new ChatGptNotFoundException(); }
         _ = DrainErrorsAsync();
     }
 
@@ -363,6 +380,11 @@ internal sealed class ChatGptConnection : IChatGptConnection
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); }
         catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
+        // Usually the killed process is gone within milliseconds, so its folder is removed right
+        // here, which also covers the app exiting before a background cleanup could run. A process
+        // that still holds the folder is waited for in the background.
+        try { _process.WaitForExit(500); } catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
+        if (TempWork.Remove(_directory)) { _process.Dispose(); return; }
         _ = CleanupAsync();
     }
 
@@ -373,8 +395,53 @@ internal sealed class ChatGptConnection : IChatGptConnection
         finally
         {
             _process.Dispose();
-            try { Directory.Delete(_directory, recursive: true); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            TempWork.Remove(_directory);
         }
+    }
+}
+
+/// <summary>
+/// The private working folders of the ChatGPT engine, %TEMP%\Nax-Translate\&lt;id&gt;. Nothing of the
+/// owner's is ever in them, so leftovers can be removed without asking.
+/// </summary>
+internal static class TempWork
+{
+    internal static string Root => Path.Combine(Path.GetTempPath(), "Nax-Translate");
+
+    internal static string NewFolder()
+    {
+        var dir = Path.Combine(Root, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    /// <summary>Deletes the folder and, once it is the last one, the Nax-Translate folder too. True when it is gone.</summary>
+    internal static bool Remove(string dir)
+    {
+        try
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+            var parent = Path.GetDirectoryName(dir);
+            if (parent != null && Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+                Directory.Delete(parent);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return !Directory.Exists(dir); }
+    }
+
+    /// <summary>
+    /// Removes the folders a crashed or killed earlier run left behind. Called once at start, before
+    /// the first ChatGPT connection, so no folder in use is touched.
+    /// </summary>
+    internal static void RemoveLeftovers(string? root = null)
+    {
+        root ??= Root;
+        try
+        {
+            if (!Directory.Exists(root)) return;
+            foreach (var dir in Directory.EnumerateDirectories(root)) Remove(dir);
+            if (Directory.Exists(root) && !Directory.EnumerateFileSystemEntries(root).Any()) Directory.Delete(root);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 }

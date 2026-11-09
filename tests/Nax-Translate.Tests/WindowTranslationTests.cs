@@ -502,4 +502,46 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.True(MainWindow.IsPasteLike([MainWindow.PasteLikeChars]));
         Assert.True(MainWindow.IsPasteLike([1, 250]));
     }
+
+    [Fact]
+    public Task model_answer_that_ignored_other_target_gets_second_request() => dispatcher.Run(async () =>
+    {
+        // German text, German target, and the model only polished the text instead of using English.
+        using var h = new Harness(chatgpt: true);
+        h.Window.TgtCombo.SelectedItem = "Deutsch";
+        var run = h.Start("Hallo Welt");
+        h.ChatGpt.Requests[0].Answer.SetResult(("Hallo Welt", "DE"));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2, h.ChatGpt.Requests.Count);
+        h.ChatGpt.Requests[1].Answer.SetResult(("Hello world", "DE"));
+        await run;
+        Assert.Equal("Hello world", h.Window.TgtBox.Text);
+        Assert.Equal("Englisch (US)", h.Window.TgtCombo.SelectedItem);
+    });
+
+    [Fact]
+    public Task text_edited_back_to_translated_text_is_not_sent_again() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness();
+        var run = h.Start("Hello world");
+        h.Requests[0].Complete("Hallo Welt");
+        await run;
+
+        // One character typed and deleted again, then the typing pause ends.
+        h.Window.SrcBox.Text = "Hello world!";
+        h.Window.SrcBox.Text = "Hello world";
+        await h.Window.TranslateAsync();
+        Assert.Single(h.Requests);
+        Assert.Equal("Hallo Welt", h.Window.TgtBox.Text);
+    });
+
+    [Fact]
+    public void polished_text_counts_as_untranslated_but_real_translation_does_not()
+    {
+        const string source = "Unwahrscheinlich würde ich sagen, die Nachfrage ist immer noch sehr hoch";
+        Assert.True(ClaudeCli.LooksUntranslated(source, "Unwahrscheinlich, würde ich sagen. Die Nachfrage ist immer noch sehr hoch."));
+        Assert.False(ClaudeCli.LooksUntranslated(source, "Unlikely, I'd say. Demand is still very high."));
+        Assert.True(ClaudeCli.LooksUntranslated("Hallo Welt", "hallo welt"));
+        Assert.False(ClaudeCli.LooksUntranslated("Hallo Welt", "Hello world"));
+    }
 }

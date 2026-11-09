@@ -120,8 +120,7 @@ public sealed class ChatGptCli : IChatGptClient
         if (!await CheckAuthAsync(ct)) throw new ChatGptSignInException();
         ct.ThrowIfCancellationRequested();
 
-        var directory = Path.Combine(Path.GetTempPath(), "Nax-Translate", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(directory);
+        var directory = TempWork.NewFolder();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
         try
@@ -135,7 +134,7 @@ public sealed class ChatGptCli : IChatGptClient
         { throw new TimeoutException(Loc.StatusChatGptTimeout); }
         finally
         {
-            try { Directory.Delete(directory, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            TempWork.Remove(directory);
         }
     }
 

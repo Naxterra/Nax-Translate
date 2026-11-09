@@ -83,6 +83,8 @@ public partial class App : Application
         // replacing dead connections whenever Windows reports a network change.
         AuthManager.RestoreLeftoverSchemeHandler();
         Net.WatchNetworkChanges();
+        // Working folders that a crashed or killed earlier run of the ChatGPT engine left behind.
+        TempWork.RemoveLeftovers();
 
         // A "Start with Windows" entry from before the rename points at the old program file, and
         // one from before 1.2.0 lacks --autostart. Writing it again fixes both.

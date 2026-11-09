@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -21,6 +22,7 @@ public sealed class ChatGptServerTests
         public readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool HasExited { get; private set; }
         public bool SignedIn = true, Ephemeral = true, Hang, Failed, IncludeWrongThread;
+        public TaskCompletionSource? HoldThreadStart;
         public string? ToolKind;
         public string Reply = "lang: DE\nhonor";
         string _thread = "";
@@ -44,7 +46,9 @@ public sealed class ChatGptServerTests
                 case "account/read": return Task.FromResult(Json(new { account = SignedIn ? new { type = "chatgpt" } : null }));
                 case "thread/start":
                     _thread = Guid.NewGuid().ToString("N");
-                    return Task.FromResult(Json(new { thread = new { id = _thread, ephemeral = Ephemeral } }));
+                    var thread = Json(new { thread = new { id = _thread, ephemeral = Ephemeral } });
+                    // Holds the connection, ignoring cancellation, like a request stuck on the server.
+                    return HoldThreadStart != null ? HoldThreadStart.Task.ContinueWith(_ => thread) : Task.FromResult(thread);
                 case "turn/start":
                     if (IncludeWrongThread)
                         Events.Enqueue(Json(new { method = "item/completed", @params = new { threadId = "old-thread", item = new { type = "agentMessage", text = "old answer" } } }));
@@ -365,5 +369,66 @@ public sealed class ChatGptServerTests
         Assert.Contains("features.hooks=false", args);
         Assert.Contains("forced_login_method=\"chatgpt\"", args);
         Assert.Throws<Exception>(() => ChatGptConnection.BuildArgs(["invalid.name"]));
+    }
+
+    [Fact]
+    public async Task waiting_too_long_for_busy_connection_reports_timeout_not_bare_cancellation()
+    {
+        var connection = new Connection { HoldThreadStart = new() };
+        var client = new ChatGptServer(_ => connection, TimeSpan.FromMilliseconds(300));
+        try
+        {
+            // The first request holds the one connection and does not give it back in time.
+            var first = Translate(client, "first text");
+            await Task.Delay(50);
+            await Assert.ThrowsAsync<TimeoutException>(() => Translate(client, "second text"));
+            connection.HoldThreadStart.SetResult();
+            await Assert.ThrowsAnyAsync<Exception>(() => first);
+        }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public async Task mcp_server_removed_from_codex_config_is_not_switched_off_after_reconnect()
+    {
+        var names = new List<string[]>();
+        var withServer = true;
+        var client = new ChatGptServer(n =>
+        {
+            names.Add(n.ToArray());
+            var c = new Connection();
+            // The first start finds a server in the Codex configuration; the restart switches it off.
+            if (withServer && n.Count == 0) c.Servers["notes"] = new { command = "notes.exe" };
+            return c;
+        });
+        try
+        {
+            await Translate(client);
+            Assert.Equal(["notes"], names[^1]);
+
+            // The owner removes the server from Codex and reconnects ChatGPT.
+            withServer = false;
+            client.Stop();
+            await Translate(client, "another text");
+            Assert.Empty(names[^1]);
+        }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public void leftover_working_folders_are_removed_at_start_and_last_one_takes_parent_along()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "NaxTranslate.Tests", Guid.NewGuid().ToString("N"), "Nax-Translate");
+        var a = Path.Combine(root, "a");
+        var b = Path.Combine(root, "b");
+        Directory.CreateDirectory(a);
+        Directory.CreateDirectory(b);
+        File.WriteAllText(Path.Combine(a, "left.txt"), "x");
+
+        Assert.True(TempWork.Remove(b));
+        Assert.True(Directory.Exists(root), "the parent stays while another folder is in it");
+        TempWork.RemoveLeftovers(root);
+        Assert.False(Directory.Exists(root));
+        Directory.Delete(Path.GetDirectoryName(root)!, recursive: true);
     }
 }

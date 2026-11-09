@@ -115,7 +115,25 @@ public static class ClaudeCli
             "situation, following the tone of the text.",
     };
 
-    /// <summary>The user message for one translation.</summary>
+    /// <summary>
+    /// True when an answer that should be in the fallback language still looks like the source text,
+    /// because a model ignored the fallback rule and only polished the text. Translations share very
+    /// few words with their source, while a polished text shares most of them, so more than half of
+    /// the words in common counts as untranslated. Very short texts must match exactly.
+    /// </summary>
+    internal static bool LooksUntranslated(string source, string answer)
+    {
+        static HashSet<string> Words(string s) =>
+            System.Text.RegularExpressions.Regex.Matches(s.ToLowerInvariant(), @"\p{L}{3,}")
+                .Select(m => m.Value).ToHashSet();
+        var a = Words(source);
+        var b = Words(answer);
+        if (a.Count < 3 || b.Count < 3)
+            return string.Equals(source.Trim(), answer.Trim(), StringComparison.OrdinalIgnoreCase);
+        var shared = a.Count(b.Contains);
+        return shared * 2 > Math.Min(a.Count, b.Count);
+    }
+
     /// <summary>
     /// The language to translate into when the text turns out to be in the target language already,
     /// the same rule as <see cref="DeepLApi.AutoTarget"/>. Putting it into the request saves a second
@@ -129,6 +147,7 @@ public static class ClaudeCli
         return DeepLApi.AutoTarget(target, tgtLang);
     }
 
+    /// <summary>The user message for one translation.</summary>
     internal static string BuildPrompt(string text, string tgtLang, string srcLang, string? tone = null)
     {
         var sb = new StringBuilder();

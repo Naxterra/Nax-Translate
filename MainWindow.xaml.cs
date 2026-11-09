@@ -487,9 +487,10 @@ public partial class MainWindow : Window
                 _cfg.Save();
                 srcLang = sw.Src;
                 // Claude and ChatGPT were told the fallback target in the same request (see
-                // ClaudeCli.FallbackTarget), so their answer is already in the new target language.
-                // Only DeepL needs a second request.
-                if (!claude && !chatgpt)
+                // ClaudeCli.FallbackTarget), so their answer is normally in the new target language
+                // already. DeepL always needs a second request, and so does a model answer that
+                // still looks like the source, because the model only polished the text.
+                if (!claude && !chatgpt || ClaudeCli.LooksUntranslated(src, result.Text))
                 {
                     result = await Run(sw.Tgt);
                     ct.ThrowIfCancellationRequested();
@@ -598,12 +599,16 @@ public partial class MainWindow : Window
         SetStatus(Loc.StatusReady);
     }
 
-    void InvalidateTranslation()
+    void InvalidateTranslation(bool optionsChanged = true)
     {
         // The input or translation options changed. Cancel before waiting for the debounce,
         // otherwise an old answer could be shown under the new options or switch them back.
         CancelRunningTranslation();
-        _lastSrc = "";
+        // New options need a new translation of the same text. A text edit does not: when the text
+        // ends up as it was (one character typed and deleted again, or Ctrl+C+C on the text that is
+        // already translated), sending it again would only use up quota. A translation that was
+        // cancelled above or failed earlier has cleared _lastSrc or is retried below.
+        if (optionsChanged || _failed) _lastSrc = "";
         _failed = false;
         _retry.Stop();
         _retry.Interval = FirstRetryDelay;
@@ -617,7 +622,7 @@ public partial class MainWindow : Window
         // The running translation is for text that no longer exists, so stop it right away
         // instead of when the next one starts. Otherwise its result could overwrite the box, and
         // it would never be stopped when the text gets too short to translate.
-        InvalidateTranslation();
+        InvalidateTranslation(optionsChanged: false);
         _debounce.Stop();
         // A paste or another large insertion is finished text, so it is translated at once instead
         // of after the typing pause. Text over the limit also goes this way, so TranslateAsync can
