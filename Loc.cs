@@ -63,6 +63,8 @@ public static class Loc
     public static string StatusCopied    => En ? "Copied."                                 : "Kopiert.";
     public static string StatusClipboardBusy => En ? "The clipboard is in use by another program. Please try again."
                                                    : "Die Zwischenablage wird von einem anderen Programm benutzt. Bitte noch einmal versuchen.";
+    public static string StatusUnusableReply => En ? "The answer was not a translation, even after asking twice. Please try again or pick another engine."
+                                                   : "Die Antwort war auch beim zweiten Versuch keine Übersetzung. Bitte noch einmal versuchen oder eine andere Übersetzung wählen.";
     public static string NoTranslation   => En ? "No translation received."                : "Keine Übersetzung erhalten.";
     public static string StatusClaudeBusy => En ? "Claude is busy right now (too many requests). Please try again in a moment."
                                                 : "Claude ist gerade ausgelastet (zu viele Anfragen). Bitte gleich noch einmal versuchen.";

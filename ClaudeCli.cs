@@ -10,6 +10,12 @@ namespace NaxTranslate;
 /// <summary>Claude refuses more requests for now because the subscription's usage limit was reached.</summary>
 public sealed class ClaudeLimitReachedException(string message) : Exception(message);
 
+/// <summary>
+/// The model answered, but not with a translation in the agreed form, for example with a remark that
+/// it found no text. The window asks once more and then reports this instead of showing the remark.
+/// </summary>
+public sealed class UnusableReplyException() : Exception(Loc.StatusUnusableReply);
+
 /// <summary>Claude answered "too many requests" (HTTP 429), which can also mean it is overloaded for a moment.</summary>
 public sealed class ClaudeBusyException(string message) : Exception(message);
 
@@ -151,6 +157,9 @@ public static class ClaudeCli
     internal static string BuildPrompt(string text, string tgtLang, string srcLang, string? tone = null)
     {
         var sb = new StringBuilder();
+        // Said first and in plain words, so even a very short text is recognized as the thing to
+        // translate. Once a model answered "I couldn't find any text to translate" to four words.
+        sb.Append("Translate the text between <text> and </text> below. Even a single word or a short phrase is the text to translate.\n");
         // With a fallback the target depends on the text, so it is stated as one rule. Mentioned as
         // an afterthought, small models kept the first target and only polished the text.
         if (FallbackTarget(tgtLang, srcLang) is { } fallback)
@@ -224,7 +233,9 @@ public static class ClaudeCli
     /// <summary>
     /// Splits the model's reply into the detected language and the translation. Only a first line
     /// of the form "lang: XX" counts as the language, so a translation that starts with a short
-    /// line such as "Hi" or "OK" is never cut. Without that line the whole reply is the translation.
+    /// line such as "Hi" or "OK" is never cut. A reply without that line, or without text after it,
+    /// is not a translation: the model answered something else, for example "I couldn't find any
+    /// text to translate". It raises <see cref="UnusableReplyException"/> instead of being shown.
     /// </summary>
     internal static (string Text, string? DetectedLang) ParseReply(string reply)
     {
@@ -233,11 +244,10 @@ public static class ClaudeCli
         var first = (nl < 0 ? reply : reply[..nl]).Trim();
         if (nl > 0 && LangLine.Match(first) is { Success: true } m)
         {
-            var text = reply[(nl + 1)..].Trim('\n');
+            var text = reply[(nl + 1)..].Trim('\n', ' ');
             if (text.Length > 0) return (text, m.Groups[1].Value.ToUpperInvariant());
         }
-        if (reply.Length == 0) throw new Exception(Loc.NoTranslation);
-        return (reply, null);
+        throw new UnusableReplyException();
     }
 
     /// <summary>

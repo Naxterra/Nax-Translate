@@ -443,8 +443,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        // A model now and then answers with a remark instead of a translation ("I couldn't find
+        // any text…"). That is asked once more; a second such answer is reported, never shown.
+        async Task<(string Text, string? DetectedLang)> Run(string tgt)
+        {
+            try { return await RunOnce(tgt); }
+            catch (UnusableReplyException) when (!ct.IsCancellationRequested) { return await RunOnce(tgt); }
+        }
+
         // Claude's answer is shown when it is complete, like DeepL's, instead of word by word.
-        Task<(string Text, string? DetectedLang)> Run(string tgt) => chatgpt
+        Task<(string Text, string? DetectedLang)> RunOnce(string tgt) => chatgpt
             ? _chatGpt.TranslateAsync(src, tgt, srcLang, _cfg.ChatGptModel, tone, ct)
             : claude
             ? _claudeSession.TranslateAsync(src, tgt, srcLang, _cfg.ClaudeModel, tone: tone, ct: ct)

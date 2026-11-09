@@ -131,20 +131,30 @@ public class ClaudeCliTests
     }
 
     [Fact]
-    public void claude_reply_without_language_line_is_kept_whole_as_translation()
+    public void reply_without_language_line_is_not_shown_as_translation()
     {
-        var (text, lang) = ClaudeCli.ParseReply("Guten Morgen,\nwie geht es dir?");
-        Assert.Equal("Guten Morgen,\nwie geht es dir?", text);
-        Assert.Null(lang);
+        // The answer from the window: a remark instead of a translation, without the agreed first line.
+        Assert.Throws<UnusableReplyException>(() => ClaudeCli.ParseReply(
+            "I couldn't find any text to translate. Please resend your request with the target language and the text between <text> and </text> tags."));
+        Assert.Throws<UnusableReplyException>(() => ClaudeCli.ParseReply("Guten Morgen,\nwie geht es dir?"));
+        Assert.Throws<UnusableReplyException>(() => ClaudeCli.ParseReply("lang: EN\n   "));
     }
 
     [Fact]
     public void translation_starting_with_two_letter_line_is_never_cut()
     {
         // "Hi" is also the code for Hindi, so only a "lang:" line may count as the language.
-        var (text, lang) = ClaudeCli.ParseReply("Hi\nhow are you?");
+        var (text, lang) = ClaudeCli.ParseReply("lang: DE\nHi\nhow are you?");
         Assert.Equal("Hi\nhow are you?", text);
-        Assert.Null(lang);
+        Assert.Equal("DE", lang);
+    }
+
+    [Fact]
+    public void request_says_first_that_even_a_short_phrase_is_the_text_to_translate()
+    {
+        var prompt = ClaudeCli.BuildPrompt("baby dont hurt me", "de", "en", "formal");
+        Assert.StartsWith("Translate the text between <text> and </text> below.", prompt);
+        Assert.Contains("<text>\nbaby dont hurt me\n</text>", prompt);
     }
 
     [Fact]

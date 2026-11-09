@@ -536,6 +536,33 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
     });
 
     [Fact]
+    public Task remark_instead_of_translation_is_asked_again_and_never_shown() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        var run = h.Start("baby dont hurt me");
+        h.ChatGpt.Requests[0].Answer.SetException(new UnusableReplyException());
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2, h.ChatGpt.Requests.Count);
+        h.ChatGpt.Requests[1].Answer.SetResult(("Baby, tu mir nicht weh", "EN"));
+        await run;
+        Assert.Equal("Baby, tu mir nicht weh", h.Window.TgtBox.Text);
+    });
+
+    [Fact]
+    public Task second_remark_is_reported_and_no_third_request_is_made() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        var run = h.Start("baby dont hurt me");
+        h.ChatGpt.Requests[0].Answer.SetException(new UnusableReplyException());
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        h.ChatGpt.Requests[1].Answer.SetException(new UnusableReplyException());
+        await run;
+        Assert.Equal(2, h.ChatGpt.Requests.Count);
+        Assert.Empty(h.Window.TgtBox.Text);
+        Assert.Contains(Loc.StatusUnusableReply, h.Window.StatusText.Text);
+    });
+
+    [Fact]
     public void polished_text_counts_as_untranslated_but_real_translation_does_not()
     {
         const string source = "Unwahrscheinlich würde ich sagen, die Nachfrage ist immer noch sehr hoch";
