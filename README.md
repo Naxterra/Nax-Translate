@@ -65,7 +65,7 @@ An installed Nax-DeepL is updated in place: the setup moves the program to the n
 
 | Action | How |
 |---|---|
-| Translate | Type in the left box. The translation appears after a short pause. |
+| Translate | Type in the left box to translate after a short pause, or paste text to start immediately. |
 | Force translate | `Ctrl+Enter` |
 | Translate clipboard | Press `Ctrl+C+C` anywhere on the system. |
 | Switch languages | Use the dropdowns or click ⇌ to swap. |

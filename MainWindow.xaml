@@ -153,6 +153,7 @@
                              AcceptsReturn="True" TextWrapping="Wrap"
                              VerticalScrollBarVisibility="Auto"
                              TextChanged="SrcBox_Changed"
+                             DataObject.Pasting="SrcBox_Pasting"
                              KeyDown="SrcBox_KeyDown"/>
                     <Grid Grid.Row="1" Margin="12,0,8,8">
                         <Grid.ColumnDefinitions>

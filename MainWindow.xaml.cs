@@ -30,6 +30,8 @@ public partial class MainWindow : Window
     bool                      _failed;          // last translation could not reach DeepL
     bool                      _autoSwitching;   // the app itself is changing the target language
     bool                      _stopped;
+    bool                      _pastePending;
+    int                       _pasteVersion;
     readonly SemaphoreSlim    _refreshLock = new(1, 1);
 
     // ── Auto-refresh and offline-retry timers ──
@@ -624,8 +626,22 @@ public partial class MainWindow : Window
 
     // ──────────────────────────────── Event handlers ─────────────────────────────────
 
+    void SrcBox_Pasting(object sender, DataObjectPastingEventArgs e)
+    {
+        _pastePending = true;
+        var version = ++_pasteVersion;
+        // Pasting fires before TextChanged. Clear the marker on the next dispatcher turn if
+        // another handler cancels the paste or it inserts no text, so typing stays debounced.
+        Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() =>
+        {
+            if (_pasteVersion == version) _pastePending = false;
+        }));
+    }
+
     void SrcBox_Changed(object s, TextChangedEventArgs e)
     {
+        var pasted = _pastePending;
+        _pastePending = false;
         CharCount.Text = $"{SrcBox.Text.Length} / {DeepLApi.MaxChars}";
         // The running translation is for text that no longer exists, so stop it right away
         // instead of when the next one starts. Otherwise its result could overwrite the box, and
@@ -635,7 +651,7 @@ public partial class MainWindow : Window
         // A paste or another large insertion is finished text, so it is translated at once instead
         // of after the typing pause. Text over the limit also goes this way, so TranslateAsync can
         // say why nothing is translated.
-        if (IsPasteLike(e.Changes.Select(c => c.AddedLength))) { _ = TranslateAsync(); return; }
+        if (pasted || IsPasteLike(e.Changes.Select(c => c.AddedLength))) { _ = TranslateAsync(); return; }
         _debounce.Start();
     }
 

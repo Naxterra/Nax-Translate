@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
+using DataFormats = System.Windows.DataFormats;
 using MenuItem = System.Windows.Controls.MenuItem;
 using System.Windows.Threading;
 using System.Windows.Markup;
@@ -545,6 +546,43 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.True(MainWindow.IsPasteLike([MainWindow.PasteLikeChars]));
         Assert.True(MainWindow.IsPasteLike([1, 250]));
     }
+
+    [Theory]
+    [InlineData("I")]
+    [InlineData("su")]
+    [InlineData("ehre")]
+    [InlineData("emniyet şeridi")]
+    [InlineData("nineteen characters")]
+    public Task explicit_short_paste_starts_one_translation_immediately(string text) => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        var data = new System.Windows.DataObject(DataFormats.UnicodeText, text);
+        h.Window.SrcBox.RaiseEvent(new DataObjectPastingEventArgs(data, false, DataFormats.UnicodeText));
+        h.Window.SrcBox.Text = text;
+
+        // Check before yielding: the one-second typing timer cannot have fired yet.
+        var request = Assert.Single(h.ChatGpt.Requests);
+        Assert.Equal(text, request.Text);
+        request.Answer.SetResult(("Übersetzung", "EN"));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal("Übersetzung", h.Window.TgtBox.Text);
+        await h.Window.TranslateAsync();
+        Assert.Single(h.ChatGpt.Requests);
+    });
+
+    [Fact]
+    public Task cancelled_paste_does_not_make_the_next_typed_character_send_immediately() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        var data = new System.Windows.DataObject(DataFormats.UnicodeText, "unused");
+        var paste = new DataObjectPastingEventArgs(data, false, DataFormats.UnicodeText);
+        h.Window.SrcBox.RaiseEvent(paste);
+        paste.CancelCommand();
+        await Dispatcher.Yield(DispatcherPriority.Background);
+
+        h.Window.SrcBox.Text = "a";
+        Assert.Empty(h.ChatGpt.Requests);
+    });
 
     [Fact]
     public Task model_answer_that_ignored_other_target_gets_second_request() => dispatcher.Run(async () =>
