@@ -226,7 +226,8 @@ public sealed class ChatGptServer : IChatGptClient
             {
                 model = ChatGptCli.NormalizeModel(model), modelProvider = "openai", ephemeral = true,
                 approvalPolicy = "never", sandbox = "read-only", dynamicTools = Array.Empty<object>(), environments = Array.Empty<object>(),
-                baseInstructions = ChatGptCli.TranslationInstructions, developerInstructions = "",
+                baseInstructions = ChatGptCli.TranslationInstructions,
+                developerInstructions = ClaudeCli.LanguageInstruction(target, source),
                 config = new Dictionary<string, object> { ["model_reasoning_effort"] = "low" },
             }, timeout.Token);
             var thread = started.GetProperty("thread");

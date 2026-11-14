@@ -66,6 +66,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
     {
         public CancellationToken Token;
         public string Tone = "";
+        public string Text = "", Target = "", Source = "";
         public readonly TaskCompletionSource<(string Text, string? DetectedLang)> Answer =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -81,7 +82,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         public Task<(string Text, string? DetectedLang)> TranslateAsync(string text, string target,
             string source, string? model, string tone, CancellationToken ct)
         {
-            var request = new PendingChatGpt { Token = ct, Tone = tone };
+            var request = new PendingChatGpt { Token = ct, Tone = tone, Text = text, Target = target, Source = source };
             Requests.Add(request);
             return request.Answer.Task;
         }
@@ -464,6 +465,23 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.False(h.Settings.ChatGptConnected);
         Assert.Equal(Loc.StatusChatGptDisconnectedNow, h.Window.StatusText.Text);
         Assert.Empty(h.ChatGpt.Requests);
+    });
+
+    [Fact]
+    public Task turkish_to_german_keeps_selected_languages_and_displays_one_completed_translation() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        h.Window.SrcCombo.SelectedItem = "Türkisch";
+        h.Window.TgtCombo.SelectedItem = "Deutsch";
+        var run = h.Start("emniyet şeridi");
+        var request = Assert.Single(h.ChatGpt.Requests);
+        Assert.Equal(("emniyet şeridi", "de", "tr"), (request.Text, request.Target, request.Source));
+        request.Answer.SetResult(("Standstreifen", "TR"));
+        await run;
+        Assert.Equal("Standstreifen", h.Window.TgtBox.Text);
+        Assert.Equal("Deutsch", h.Window.TgtCombo.SelectedItem);
+        Assert.Equal("Türkisch", h.Window.SrcCombo.SelectedItem);
+        Assert.Single(h.ChatGpt.Requests);
     });
 
     [Fact]

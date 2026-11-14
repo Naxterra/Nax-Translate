@@ -160,19 +160,25 @@ public static class ClaudeCli
         // Said first and in plain words, so even a very short text is recognized as the thing to
         // translate. Once a model answered "I couldn't find any text to translate" to four words.
         sb.Append("Translate the text between <text> and </text> below. Even a single word or a short phrase is the text to translate.\n");
-        // With a fallback the target depends on the text, so it is stated as one rule. Mentioned as
-        // an afterthought, small models kept the first target and only polished the text.
-        if (FallbackTarget(tgtLang, srcLang) is { } fallback)
-            sb.Append("Target language: ").Append(NameOf(fallback)).Append(" if the text is written in ")
-              .Append(NameOf(tgtLang.Split('-')[0])).Append(", otherwise ").Append(NameOf(tgtLang))
-              .Append(". Never return the text in the language it is written in.\n");
-        else
-            sb.Append("Target language: ").Append(NameOf(tgtLang)).Append('\n');
-        if (srcLang != "auto")
-            sb.Append("Source language: ").Append(NameOf(srcLang)).Append('\n');
+        sb.Append(LanguageInstruction(tgtLang, srcLang));
         sb.Append(ToneInstruction(tone ?? ToneNatural)).Append('\n');
         sb.Append("\n<text>\n").Append(text).Append("\n</text>");
         return sb.ToString();
+    }
+
+    /// <summary>The selected target is primary; auto-switching applies only to text already in it.</summary>
+    internal static string LanguageInstruction(string tgtLang, string srcLang)
+    {
+        var sb = new StringBuilder();
+        sb.Append("Target language: ").Append(NameOf(tgtLang)).Append(" (").Append(tgtLang).Append(").\n");
+        if (srcLang != "auto")
+            sb.Append("Source language: ").Append(NameOf(srcLang)).Append(".\n");
+        sb.Append("Write the entire translation in the target language. Do not default to English. ");
+        if (FallbackTarget(tgtLang, srcLang) is { } fallback)
+            sb.Append("Exception ONLY if the actual source text is already in ").Append(NameOf(tgtLang.Split('-')[0]))
+              .Append(": translate it into ").Append(NameOf(fallback))
+              .Append(" instead. Otherwise the target remains ").Append(NameOf(tgtLang)).Append('.');
+        return sb.Append('\n').ToString();
     }
 
     /// <summary>The prompt wrapped as the JSON line that "--input-format stream-json" reads.</summary>

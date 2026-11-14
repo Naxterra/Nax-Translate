@@ -92,6 +92,49 @@ public sealed class ChatGptServerTests
         string? model = null, string tone = "natural", CancellationToken ct = default) =>
         client.TranslateAsync(text, "en-US", "de", model, tone, ct);
 
+    [Theory]
+    [InlineData("de", "German", "Standstreifen")]
+    [InlineData("en-US", "English (American)", "emergency lane")]
+    public async Task turkish_phrase_uses_selected_target_in_developer_instructions_and_one_turn(
+        string target, string name, string translation)
+    {
+        var connection = new Connection { Reply = "lang: TR\n" + translation };
+        var client = new ChatGptServer(_ => connection);
+        try
+        {
+            Assert.Equal((translation, "TR"), await client.TranslateAsync("emniyet şeridi", target, "tr", null, "natural", default));
+            var thread = Assert.Single(connection.Calls, c => c.Method == "thread/start");
+            var rules = thread.Parameters.GetProperty("developerInstructions").GetString()!;
+            Assert.StartsWith($"Target language: {name} ({target}).\nSource language: Turkish.", rules);
+            Assert.Contains($"Otherwise the target remains {name}.", rules);
+            Assert.DoesNotContain("emniyet şeridi", rules);
+            var turn = Assert.Single(connection.Calls, c => c.Method == "turn/start");
+            var input = turn.Parameters.GetProperty("input")[0].GetProperty("text").GetString()!;
+            Assert.Contains(rules, input);
+            Assert.Contains("<text>\nemniyet şeridi\n</text>", input);
+        }
+        finally { client.Stop(); }
+    }
+
+    [Fact]
+    public async Task target_change_never_reuses_another_languages_cached_translation()
+    {
+        var connection = new Connection { Reply = "lang: TR\nStandstreifen" };
+        var client = new ChatGptServer(_ => connection);
+        try
+        {
+            var german = await client.TranslateAsync("emniyet şeridi", "de", "tr", null, "natural", default);
+            connection.Reply = "lang: TR\nemergency lane";
+            var english = await client.TranslateAsync("emniyet şeridi", "en-US", "tr", null, "natural", default);
+            var cached = await client.TranslateAsync("emniyet şeridi", "de", "tr", null, "natural", default);
+            Assert.Equal("Standstreifen", german.Text);
+            Assert.Equal("emergency lane", english.Text);
+            Assert.Equal(german, cached);
+            Assert.Equal(2, connection.Calls.Count(c => c.Method == "turn/start"));
+        }
+        finally { client.Stop(); }
+    }
+
     [Fact]
     public async Task warmup_checks_authentication_without_starting_a_model_turn()
     {
