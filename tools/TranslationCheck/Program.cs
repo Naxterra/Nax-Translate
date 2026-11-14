@@ -5,21 +5,30 @@ using NaxTranslate;
 
 // Opt-in live checks using synthetic text. Review meaning as well as language in the JSON output;
 // a successful request or correct source-language label does not prove translation accuracy.
-var model = args.FirstOrDefault(a => a.StartsWith("--model="))?[8..] ?? ChatGptCli.DefaultModel;
+var engine = args.FirstOrDefault(a => a.StartsWith("--engine="))?[9..] ?? "chatgpt";
+if (engine is not ("chatgpt" or "claude")) throw new ArgumentException("Use --engine=chatgpt|claude.");
+var model = args.FirstOrDefault(a => a.StartsWith("--model="))?[8..]
+    ?? (engine == "claude" ? ClaudeCli.DefaultModel : ChatGptCli.DefaultModel);
 var suite = args.FirstOrDefault(a => a.StartsWith("--suite="))?[8..] ?? "all";
-if (!Regex.IsMatch(model, @"\A[A-Za-z0-9._-]+\z") || suite is not ("core" or "focused" or "edge" or "linguistic" or "short" or "all"))
-    throw new ArgumentException("Use --model=<model> and --suite=core|focused|edge|linguistic|short|all.");
+if (!Regex.IsMatch(model, @"\A[A-Za-z0-9._-]+\z") || suite is not ("core" or "focused" or "edge" or "linguistic" or "short" or "holdout" or "all"))
+    throw new ArgumentException("Use --model=<model> and --suite=core|focused|edge|linguistic|short|holdout|all.");
 var output = Path.GetFullPath(args.FirstOrDefault(a => a.StartsWith("--output="))?[9..]
     ?? Path.Combine("artifacts", $"translation-check-{model}-{suite}.json"));
 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
 var results = new List<Result>();
 var client = new ChatGptServer();
+using var claude = new ClaudeSession();
 try
 {
-    if (!await client.CheckAuthAsync()) throw new InvalidOperationException("ChatGPT is not signed in.");
+    if (engine == "claude")
+    {
+        claude.WarmUp(model);
+        if (!(await ClaudeCli.CheckAuthAsync()).LoggedIn) throw new InvalidOperationException("Claude is not signed in.");
+    }
+    else if (!await client.CheckAuthAsync()) throw new InvalidOperationException("ChatGPT is not signed in.");
     var cases = new List<Case>();
     if (suite != "edge")
-        foreach (var sample in Corpus.Samples.Where(s => suite == "short" ? s.Id == "short"
+        foreach (var sample in (suite == "holdout" ? Corpus.Holdout : Corpus.Samples).Where(s => suite == "short" ? s.Id == "short"
             : suite == "focused" ? s.Id is "facts" or "agency" or "data"
             : suite != "linguistic" || s.Id is "idiom" or "agency"))
         foreach (var target in new[] { "de", "en-US", "tr" }.Where(t => t.Split('-')[0] != sample.Source))
@@ -32,11 +41,13 @@ try
         Result result;
         try
         {
-            var reply = await client.TranslateAsync(test.Text, test.Target, test.Source, model, test.Tone, default);
+            var reply = engine == "claude"
+                ? await claude.TranslateAsync(test.Text, test.Target, test.Source, model, tone: test.Tone)
+                : await client.TranslateAsync(test.Text, test.Target, test.Source, model, test.Tone, default);
             result = new(test, model, reply.Text, reply.DetectedLang, clock.Elapsed.TotalSeconds,
-                reply.DetectedLang != test.ExpectedSource ? "Unexpected source-language label" : null);
+                reply.DetectedLang != test.ExpectedSource ? "Unexpected source-language label" : null, engine);
         }
-        catch (Exception e) { result = new(test, model, null, null, clock.Elapsed.TotalSeconds, e.GetType().Name + ": " + e.Message); }
+        catch (Exception e) { result = new(test, model, null, null, clock.Elapsed.TotalSeconds, e.GetType().Name + ": " + e.Message, engine); }
         results.Add(result);
         File.WriteAllText(output, JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"{test.Id} {test.Source}->{test.Target} ({test.ExpectedTarget}) {result.Seconds:F2}s: {result.Output?.Replace("\n", " | ") ?? result.Error}");
@@ -58,10 +69,20 @@ static double Quantile(double[] sorted, double fraction)
 
 record Sample(string Id, string Source, string Text, string Review);
 record Case(string Id, string Text, string Source, string Target, string ExpectedSource, string ExpectedTarget, string Review, string Tone = "natural");
-record Result(Case Case, string Model, string? Output, string? Detected, double Seconds, string? Error);
+record Result(Case Case, string Model, string? Output, string? Detected, double Seconds, string? Error, string Engine);
 
 static class Corpus
 {
+    public static readonly Sample[] Holdout = [
+        new("scope-negation", "de", "Nicht alle Anträge wurden abgelehnt. Genau zwei wurden genehmigt. Alex hat keinen dieser beiden Anträge genehmigt.", "Not all rejected; exactly two approved; Alex approved neither of those two. Preserve all three logical claims."),
+        new("decision", "de", "Die Vorstandsmitglieder haben noch keinen neuen Beschluss gefasst; sie haben lediglich einen alten veröffentlicht.", "No new decision made; only an old decision published. Making and publishing are distinct."),
+        new("possibility", "en", "The contract may not be renewed. That is a possibility, not a prohibition. Please do not assume it has already expired.", "Possible non-renewal, not a ban or certainty; expiry is not established."),
+        new("charge", "en", "The charge is for charging the battery, not a criminal charge. The invoice totals €1,250.50, excluding VAT.", "Fee for battery charging, no criminal accusation; 1250.50 EUR excluding VAT."),
+        new("neutral-person", "en", "Sam said they might arrive on Friday, not that they definitely would. Sam's gender is not specified.", "Friday, possibility rather than certainty; no invented gender."),
+        new("neutral-person", "tr", "Deniz doktor, eşi ise mühendis. İkisinin de cinsiyeti belirtilmiyor.", "Deniz is a doctor; spouse is an engineer; neither gender is specified. Do not assign a male doctor or female spouse."),
+        new("sender", "tr", "Dosyayı Ayşe değil, yalnızca Mehmet göndermedi; diğer herkes gönderdi.", "Only Mehmet did not send it; Ayşe and everyone else did. Names are senders, not recipients."),
+        new("announcement", "tr", "Şirket üretimi durduracağını açıklamadı; yalnızca bu seçeneği değerlendirdiğini söyledi.", "Company did not announce a production stop; it only said it was considering that option."),
+    ];
     public static readonly Sample[] Samples = [
         new("short", "de", "ja", "Yes or evet; do not skip a two-letter word."),
         new("short", "en", "no", "Nein or hayır; preserve negation."),
