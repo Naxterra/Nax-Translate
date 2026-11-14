@@ -227,7 +227,7 @@ public sealed class ChatGptServer : IChatGptClient
                 model = ChatGptCli.NormalizeModel(model), modelProvider = "openai", ephemeral = true,
                 approvalPolicy = "never", sandbox = "read-only", dynamicTools = Array.Empty<object>(), environments = Array.Empty<object>(),
                 baseInstructions = ChatGptCli.TranslationInstructions,
-                developerInstructions = ClaudeCli.LanguageInstruction(target, source),
+                developerInstructions = ChatGptCli.LanguageInstruction(target, source),
                 config = new Dictionary<string, object> { ["model_reasoning_effort"] = "low" },
             }, timeout.Token);
             var thread = started.GetProperty("thread");
@@ -236,7 +236,7 @@ public sealed class ChatGptServer : IChatGptClient
             await connection.RequestAsync("turn/start", new
             {
                 threadId, effort = "low", serviceTierForTurn = "default",
-                input = new[] { new { type = "text", text = ClaudeCli.BuildPrompt(text, target, source, tone) } },
+                input = new[] { new { type = "text", text = ChatGptCli.BuildPrompt(text, target, source, tone) } },
             }, timeout.Token);
             string? answer = null;
             while (true)

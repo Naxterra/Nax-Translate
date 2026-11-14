@@ -35,6 +35,25 @@ public sealed class ChatGptCli : IChatGptClient
     internal static string NormalizeModel(string? model) =>
         string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim();
 
+    /// <summary>The selected target is primary; auto-switching applies only to text already in it.</summary>
+    internal static string LanguageInstruction(string target, string source)
+    {
+        var sb = new StringBuilder();
+        sb.Append("Target language: ").Append(ClaudeCli.NameOf(target)).Append(" (").Append(target).Append(").\n");
+        if (source != "auto")
+            sb.Append("Source language: ").Append(ClaudeCli.NameOf(source)).Append(".\n");
+        sb.Append("Write the entire translation in the target language. Do not default to English. ");
+        if (ClaudeCli.FallbackTarget(target, source) is { } fallback)
+            sb.Append("Exception ONLY if the actual source text is already in ").Append(ClaudeCli.NameOf(target.Split('-')[0]))
+              .Append(": translate it into ").Append(ClaudeCli.NameOf(fallback))
+              .Append(" instead. Otherwise the target remains ").Append(ClaudeCli.NameOf(target)).Append('.');
+        return sb.Append('\n').ToString();
+    }
+
+    internal static string BuildPrompt(string text, string target, string source, string tone) =>
+        "Translate the text between <text> and </text> below. Even a single word or a short phrase is the text to translate.\n" +
+        LanguageInstruction(target, source) + ClaudeCli.ToneInstruction(tone) + "\n\n<text>\n" + text + "\n</text>";
+
     internal readonly record struct RunResult(int ExitCode, string Output, string Error);
     internal delegate Task<RunResult> Runner(ProcessStartInfo start, string? input, CancellationToken ct);
     readonly Func<string?> _find;
@@ -125,7 +144,7 @@ public sealed class ChatGptCli : IChatGptClient
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
         try
         {
-            var prompt = TranslationInstructions + "\n\n" + ClaudeCli.BuildPrompt(text, target, source, tone);
+            var prompt = TranslationInstructions + "\n\n" + BuildPrompt(text, target, source, tone);
             var result = await _run(StartInfo(BuildArgs(model), directory), prompt, timeout.Token);
             ct.ThrowIfCancellationRequested();
             return ParseOutput(result);

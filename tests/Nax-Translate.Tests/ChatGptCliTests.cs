@@ -96,6 +96,18 @@ public sealed class ChatGptCliTests
         Assert.All(directories, d => Assert.False(Directory.Exists(d)));
     }
 
+    [Theory]
+    [InlineData("auto", true)]
+    [InlineData("de", false)]
+    public void target_language_is_primary_and_same_language_selection_controls_the_exception(string source, bool autoSwitch)
+    {
+        var rules = ChatGptCli.LanguageInstruction("de", source);
+        Assert.StartsWith("Target language: German (de).", rules);
+        Assert.Equal(autoSwitch, rules.Contains("Exception ONLY if the actual source text is already in German"));
+        if (autoSwitch) Assert.Contains("Otherwise the target remains German.", rules);
+        else Assert.DoesNotContain("English (American)", rules);
+    }
+
     [Fact]
     public async Task already_cancelled_or_over_limit_text_starts_no_process()
     {
