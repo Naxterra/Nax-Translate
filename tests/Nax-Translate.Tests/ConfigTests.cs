@@ -13,10 +13,10 @@ public sealed class ConfigTests : IDisposable
     }
 
     [Fact]
-    public void new_settings_use_luna_for_chatgpt_without_changing_other_engines()
+    public void new_settings_use_sol_for_chatgpt_without_changing_other_engines()
     {
         var cfg = Config.Load(ConfigPath);
-        Assert.Equal("gpt-6-luna", cfg.ChatGptModel);
+        Assert.Equal("gpt-6.1-sol", cfg.ChatGptModel);
         Assert.Equal("classic", cfg.Engine);
         Assert.Equal(ClaudeCli.DefaultModel, cfg.ClaudeModel);
     }
@@ -36,12 +36,13 @@ public sealed class ConfigTests : IDisposable
     }
 
     [Theory]
-    [InlineData("{}", "gpt-6-luna")]
-    [InlineData("{\"chatgpt_model\":\"\"}", "gpt-6-luna")]
-    [InlineData("{\"chatgpt_model\":null}", "gpt-6-luna")]
-    [InlineData("{\"chatgpt_model\":\"  \"}", "gpt-6-luna")]
+    [InlineData("{}", "gpt-6.1-sol")]
+    [InlineData("{\"chatgpt_model\":\"\"}", "gpt-6.1-sol")]
+    [InlineData("{\"chatgpt_model\":null}", "gpt-6.1-sol")]
+    [InlineData("{\"chatgpt_model\":\"  \"}", "gpt-6.1-sol")]
+    [InlineData("{\"chatgpt_model\":\"gpt-6-luna\"}", "gpt-6-luna")]
     [InlineData("{\"chatgpt_model\":\"gpt-6.1-terra\"}", "gpt-6.1-terra")]
-    public void legacy_empty_model_uses_luna_and_explicit_model_is_kept(string json, string expected)
+    public void legacy_empty_model_uses_default_and_explicit_model_is_kept(string json, string expected)
     {
         Directory.CreateDirectory(_dir);
         File.WriteAllText(ConfigPath, json);

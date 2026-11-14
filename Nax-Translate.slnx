@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/IconMaker/IconMaker.csproj" />
+    <Project Path="tools/TranslationCheck/TranslationCheck.csproj" />
   </Folder>
   <Project Path="Nax-Translate.csproj" />
 </Solution>

@@ -304,7 +304,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
 
     [Theory]
     [InlineData("")]
-    [InlineData("hi")]
+    [InlineData(" \t ")]
     [InlineData("over limit")]
     public Task editing_text_cancels_request_even_when_new_text_cannot_translate(string text) => dispatcher.Run(async () =>
     {
@@ -467,37 +467,62 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.Empty(h.ChatGpt.Requests);
     });
 
-    [Fact]
-    public Task turkish_to_german_keeps_selected_languages_and_displays_one_completed_translation() => dispatcher.Run(async () =>
+    [Theory]
+    [InlineData("tr", "de", "emniyet şeridi", "Standstreifen")]
+    [InlineData("tr", "en-US", "emniyet şeridi", "emergency lane")]
+    [InlineData("de", "en-US", "Ehre", "honor")]
+    [InlineData("de", "tr", "Ehre", "onur")]
+    [InlineData("en", "de", "honor", "Ehre")]
+    [InlineData("en", "tr", "honor", "onur")]
+    [InlineData("de", "en-US", "ja", "yes")]
+    [InlineData("de", "tr", "ja", "evet")]
+    [InlineData("en", "de", "no", "nein")]
+    [InlineData("en", "tr", "no", "hayır")]
+    [InlineData("tr", "de", "su", "Wasser")]
+    [InlineData("tr", "en-US", "su", "water")]
+    [InlineData("en", "de", "I", "ich")]
+    [InlineData("en", "tr", "I", "ben")]
+    public Task each_direction_keeps_selected_languages_and_displays_one_completed_translation(
+        string source, string target, string text, string translation) => dispatcher.Run(async () =>
     {
         using var h = new Harness(chatgpt: true);
-        h.Window.SrcCombo.SelectedItem = "Türkisch";
-        h.Window.TgtCombo.SelectedItem = "Deutsch";
-        var run = h.Start("emniyet şeridi");
+        var sourceName = DeepLApi.SrcLangs.First(kv => kv.Value == source).Key;
+        var targetName = DeepLApi.TgtLangs.First(kv => kv.Value == target).Key;
+        h.Window.SrcCombo.SelectedItem = sourceName;
+        h.Window.TgtCombo.SelectedItem = targetName;
+        var run = h.Start(text);
         var request = Assert.Single(h.ChatGpt.Requests);
-        Assert.Equal(("emniyet şeridi", "de", "tr"), (request.Text, request.Target, request.Source));
-        request.Answer.SetResult(("Standstreifen", "TR"));
+        Assert.Equal((text, target, source), (request.Text, request.Target, request.Source));
+        request.Answer.SetResult((translation, source.ToUpperInvariant()));
         await run;
-        Assert.Equal("Standstreifen", h.Window.TgtBox.Text);
-        Assert.Equal("Deutsch", h.Window.TgtCombo.SelectedItem);
-        Assert.Equal("Türkisch", h.Window.SrcCombo.SelectedItem);
+        Assert.Equal(translation, h.Window.TgtBox.Text);
+        Assert.Equal(targetName, h.Window.TgtCombo.SelectedItem);
+        Assert.Equal(sourceName, h.Window.SrcCombo.SelectedItem);
         Assert.Single(h.ChatGpt.Requests);
     });
 
-    [Fact]
-    public Task text_already_in_target_language_switches_target_without_second_chatgpt_request() => dispatcher.Run(async () =>
+    [Theory]
+    [InlineData("auto", "de", "DE", "Hallo Welt", "Hello world", "en-US", "auto")]
+    [InlineData("auto", "en-US", "EN", "Hello world", "Hallo Welt", "de", "auto")]
+    [InlineData("auto", "tr", "TR", "Merhaba dünya", "Hallo Welt", "de", "auto")]
+    [InlineData("en", "de", "DE", "Hallo Welt", "Hello world", "en-US", "de")]
+    [InlineData("tr", "en-US", "EN", "Hello world", "Hallo Welt", "de", "en")]
+    [InlineData("de", "tr", "TR", "Merhaba dünya", "Hallo Welt", "de", "tr")]
+    public Task text_already_in_target_language_switches_target_without_second_chatgpt_request(
+        string source, string target, string detected, string text, string translation, string nextTarget, string nextSource) => dispatcher.Run(async () =>
     {
-        // German text with German as target: the request already asked for English in that case,
-        // so the answer is shown and only the dropdown changes. A second request would double the wait.
+        // The request includes the fallback. Source detection updates the dropdowns without a second turn.
         using var h = new Harness(chatgpt: true);
-        h.Window.TgtCombo.SelectedItem = "Deutsch";
-        var run = h.Start("Hallo Welt");
+        h.Window.SrcCombo.SelectedItem = DeepLApi.SrcLangs.First(kv => kv.Value == source).Key;
+        h.Window.TgtCombo.SelectedItem = DeepLApi.TgtLangs.First(kv => kv.Value == target).Key;
+        var run = h.Start(text);
         var request = Assert.Single(h.ChatGpt.Requests);
-        request.Answer.SetResult(("Hello world", "DE"));
+        request.Answer.SetResult((translation, detected));
         await run;
         Assert.Single(h.ChatGpt.Requests);
-        Assert.Equal("Hello world", h.Window.TgtBox.Text);
-        Assert.Equal("Englisch (US)", h.Window.TgtCombo.SelectedItem);
+        Assert.Equal(translation, h.Window.TgtBox.Text);
+        Assert.Equal(DeepLApi.TgtLangs.First(kv => kv.Value == nextTarget).Key, h.Window.TgtCombo.SelectedItem);
+        Assert.Equal(DeepLApi.SrcLangs.First(kv => kv.Value == nextSource).Key, h.Window.SrcCombo.SelectedItem);
     });
 
     [Fact]

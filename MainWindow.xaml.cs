@@ -404,7 +404,7 @@ public partial class MainWindow : Window
     {
         if (_stopped) return;
         var src = SrcBox.Text.Trim();
-        if (src.Length < 3) return;
+        if (src.Length == 0) return;
         if (src.Length > DeepLApi.MaxChars)
         {
             _cts.Cancel();
@@ -869,7 +869,7 @@ public partial class MainWindow : Window
         string text;
         try   { text = Clipboard.GetText().Trim(); }
         catch (Exception) { SetStatus(Loc.StatusClipboardBusy); return; }
-        if (text.Length < 2) return;
+        if (text.Length == 0) return;
 
         Show();
         WindowState = WindowState.Normal;

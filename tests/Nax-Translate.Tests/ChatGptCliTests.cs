@@ -29,7 +29,7 @@ public sealed class ChatGptCliTests
         Assert.Equal("example-model", args[args.IndexOf("--model") + 1]);
         Assert.Equal("-", args[^1]);
         var defaults = ChatGptCli.BuildArgs(" ").ToList();
-        Assert.Equal("gpt-6-luna", defaults[defaults.IndexOf("--model") + 1]);
+        Assert.Equal("gpt-6.1-sol", defaults[defaults.IndexOf("--model") + 1]);
     }
 
     [Fact]
