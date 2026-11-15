@@ -19,10 +19,13 @@ public partial class MainWindow : Window
     bool                      _nextGen;
     bool                      _claude;          // the Claude engine is picked instead of DeepL
     bool                      _chatgpt;
+    bool                      _gemini;
     bool                      _changingTone;
     readonly IChatGptClient    _chatGpt;
+    readonly IChatGptClient    _geminiClient;
     readonly CancellationTokenSource _lifetime = new();
     int                       _chatGptConnectionVersion;
+    int                       _geminiConnectionVersion;
     bool                      _busy;            // a translation is running right now
     readonly ClaudeSession    _claudeSession;
     string                    _lastSrc = "";
@@ -44,12 +47,13 @@ public partial class MainWindow : Window
     // Separate settings and transports let window tests exercise the real event handlers
     // without reading the user's login or contacting either translation service.
     internal MainWindow(Config config, ResilientHttp? http = null, ClaudeSession? claudeSession = null,
-        IChatGptClient? chatGpt = null)
+        IChatGptClient? chatGpt = null, IChatGptClient? gemini = null)
     {
         _cfg = config;
         _http = http;
         _claudeSession = claudeSession ?? new();
         _chatGpt = chatGpt ?? new ChatGptServer();
+        _geminiClient = gemini ?? new GeminiServer();
         InitializeComponent();
 
         // Timers must be created before setting combo selections (which fire events)
@@ -64,6 +68,7 @@ public partial class MainWindow : Window
             // still finds one ready instead of starting the tool then.
             if (_claude && _cfg.ClaudeConnected) _claudeSession.WarmUp(_cfg.ClaudeModel);
             if (_chatgpt && _cfg.ChatGptConnected) _chatGpt.WarmUp();
+            if (_gemini && _cfg.GeminiConnected) _geminiClient.WarmUp();
             await RefreshTokenAsync();
         };
         _refresh.Start();
@@ -100,7 +105,8 @@ public partial class MainWindow : Window
         TgtCombo.SelectedItem = DeepLApi.TgtLangs.Keys.FirstOrDefault(
             k => DeepLApi.TgtLangs[k] == _cfg.TgtLang, "Deutsch");
 
-        if      (_cfg.Engine == "chatgpt") ChatGptRb.IsChecked = true;
+        if      (_cfg.Engine == "gemini")  GeminiRb.IsChecked  = true;
+        else if (_cfg.Engine == "chatgpt") ChatGptRb.IsChecked = true;
         else if (_cfg.Engine == "claude")  ClaudeRb.IsChecked  = true;
         else if (_cfg.Engine == "nextgen") NextgenRb.IsChecked = true;
         else                               ClassicRb.IsChecked = true;
@@ -169,6 +175,7 @@ public partial class MainWindow : Window
             // shows the plan and a missing sign-in is reported before the first translation.
             if (!_stopped && _claude && _cfg.ClaudeConnected) await CheckClaudeAsync(quiet: true);
             if (!_stopped && _chatgpt && _cfg.ChatGptConnected) await CheckChatGptAsync(quiet: true);
+            if (!_stopped && _gemini && _cfg.GeminiConnected) await CheckGeminiAsync(quiet: true);
         }
         catch (Exception ex)
         {
@@ -325,6 +332,53 @@ public partial class MainWindow : Window
         SetStatus(Loc.StatusChatGptDisconnectedNow);
     }
 
+    // Gemini works like ChatGPT: a sign-in check, a kept-ready backend and its own connected choice.
+    async Task<bool> CheckGeminiAsync(bool quiet, int? connectionVersion = null)
+    {
+        if (!quiet) SetStatus(Loc.StatusGeminiChecking);
+        try
+        {
+            var loggedIn = await _geminiClient.CheckAuthAsync(_lifetime.Token);
+            if (_stopped || connectionVersion.HasValue && connectionVersion != _geminiConnectionVersion) return false;
+            _geminiBadge = loggedIn ? "Gemini ✓" : "";
+            UpdateBadge();
+            if ((!quiet || _gemini) && (!quiet || _cfg.GeminiConnected))
+                SetStatus(loggedIn ? Loc.StatusGeminiConnected : Loc.StatusGeminiNotSignedIn);
+            return loggedIn;
+        }
+        catch (OperationCanceledException) when (_stopped) { return false; }
+        catch (Exception ex)
+        {
+            if (_stopped || connectionVersion.HasValue && connectionVersion != _geminiConnectionVersion) return false;
+            _geminiBadge = "";
+            UpdateBadge();
+            if (!_stopped && (!quiet || _gemini))
+                SetStatus(ex is GeminiNotFoundException ? Loc.StatusGeminiNotFound : Loc.StatusError + ex.Message);
+            return false;
+        }
+    }
+
+    async void GeminiConnect_Click(object s, RoutedEventArgs e)
+    {
+        var version = ++_geminiConnectionVersion;
+        if (!await CheckGeminiAsync(quiet: false, connectionVersion: version) || _stopped || version != _geminiConnectionVersion) return;
+        _cfg.GeminiConnected = true;
+        _cfg.Save();
+        UpdateBadge();
+        if (_gemini) { _geminiClient.WarmUp(); InvalidateTranslation(); _debounce.Stop(); _debounce.Start(); }
+    }
+
+    void GeminiDisconnect_Click(object s, RoutedEventArgs e)
+    {
+        _geminiConnectionVersion++;
+        _cfg.GeminiConnected = false;
+        _cfg.Save();
+        if (_gemini) { InvalidateTranslation(); _debounce.Stop(); }
+        _geminiClient.Stop();
+        UpdateBadge();
+        SetStatus(Loc.StatusGeminiDisconnectedNow);
+    }
+
     /// <summary>
     /// Makes sure a usable access token is loaded. Never throws: when DeepL cannot be reached,
     /// the stored login is kept and the status shows that the app is offline.
@@ -426,9 +480,10 @@ public partial class MainWindow : Window
         // The engine is fixed for this whole translation, even if the toggle changes meanwhile.
         var claude = _claude;
         var chatgpt = _chatgpt;
+        var gemini  = _gemini;
         var nextGen = _nextGen;
-        var tone   = chatgpt ? _cfg.ChatGptTone : _cfg.ClaudeTone;
-        var engineName = chatgpt ? "ChatGPT" : claude ? "Claude" : "DeepL";
+        var tone   = gemini ? _cfg.GeminiTone : chatgpt ? _cfg.ChatGptTone : _cfg.ClaudeTone;
+        var engineName = gemini ? "Gemini" : chatgpt ? "ChatGPT" : claude ? "Claude" : "DeepL";
 
         // While Claude is disconnected, nothing is sent to it. Clearing _lastSrc translates the
         // text as soon as Claude is connected again.
@@ -444,6 +499,12 @@ public partial class MainWindow : Window
             SetStatus(Loc.StatusChatGptDisconnected);
             return;
         }
+        if (gemini && !_cfg.GeminiConnected)
+        {
+            _lastSrc = "";
+            SetStatus(Loc.StatusGeminiDisconnected);
+            return;
+        }
 
         // A model now and then answers with a remark instead of a translation ("I couldn't find
         // any text…"). That is asked once more; a second such answer is reported, never shown.
@@ -454,7 +515,9 @@ public partial class MainWindow : Window
         }
 
         // Claude's answer is shown when it is complete, like DeepL's, instead of word by word.
-        Task<(string Text, string? DetectedLang)> RunOnce(string tgt) => chatgpt
+        Task<(string Text, string? DetectedLang)> RunOnce(string tgt) => gemini
+            ? _geminiClient.TranslateAsync(src, tgt, srcLang, _cfg.GeminiModel, tone, ct)
+            : chatgpt
             ? _chatGpt.TranslateAsync(src, tgt, srcLang, _cfg.ChatGptModel, tone, ct)
             : claude
             ? _claudeSession.TranslateAsync(src, tgt, srcLang, _cfg.ClaudeModel, tone: tone, ct: ct)
@@ -500,7 +563,7 @@ public partial class MainWindow : Window
                 // ClaudeCli.FallbackTarget), so their answer is normally in the new target language
                 // already. DeepL always needs a second request, and so does a model answer that
                 // still looks like the source, because the model only polished the text.
-                if (!claude && !chatgpt || ClaudeCli.LooksUntranslated(src, result.Text))
+                if (!claude && !chatgpt && !gemini || ClaudeCli.LooksUntranslated(src, result.Text))
                 {
                     result = await Run(sw.Tgt);
                     ct.ThrowIfCancellationRequested();
@@ -521,6 +584,13 @@ public partial class MainWindow : Window
             _failed = false;
             _lastSrc = "";
             SetStatus(Loc.StatusChatGptNotFound);
+        }
+        catch (GeminiNotFoundException)
+        {
+            if (ct.IsCancellationRequested) return;
+            _failed = false;
+            _lastSrc = "";
+            SetStatus(Loc.StatusGeminiNotFound);
         }
         catch (ClaudeLimitReachedException ex)
         {
@@ -593,6 +663,7 @@ public partial class MainWindow : Window
         CancelRunningTranslation();
         _claudeSession.Dispose();
         _chatGpt.Stop();
+        _geminiClient.Stop();
     }
 
     /// <summary>
@@ -683,16 +754,20 @@ public partial class MainWindow : Window
         _debounce.Start();
     }
 
+    /// <summary>True while one of the subscription model engines is picked: Claude, ChatGPT or Gemini.</summary>
+    bool UsesModel => _claude || _chatgpt || _gemini;
+
     void Tone_Changed(object s, RoutedEventArgs e)
     {
         if (_changingTone) return;
         var tone = ToneFormalRb.IsChecked   == true ? ClaudeCli.ToneFormal
                         : ToneInformalRb.IsChecked == true ? ClaudeCli.ToneInformal
                         :                                    ClaudeCli.ToneNatural;
-        if (_chatgpt) _cfg.ChatGptTone = tone;
+        if (_gemini) _cfg.GeminiTone = tone;
+        else if (_chatgpt) _cfg.ChatGptTone = tone;
         else _cfg.ClaudeTone = tone;
         _cfg.Save();
-        if (!_claude && !_chatgpt) return;
+        if (!UsesModel) return;
         InvalidateTranslation();
         _debounce.Stop();
         _debounce.Start();
@@ -704,25 +779,27 @@ public partial class MainWindow : Window
         _nextGen       = NextgenRb.IsChecked == true;
         _claude        = ClaudeRb.IsChecked  == true;
         _chatgpt       = ChatGptRb.IsChecked == true;
-        _cfg.Engine    = _chatgpt ? "chatgpt" : _claude ? "claude" : _nextGen ? "nextgen" : "classic";
+        _gemini        = GeminiRb.IsChecked  == true;
+        _cfg.Engine    = _gemini ? "gemini" : _chatgpt ? "chatgpt" : _claude ? "claude" : _nextGen ? "nextgen" : "classic";
         _cfg.Save();
         // Every subscription-model request counts against its usage limit, so wait for a slightly
         // longer pause in typing before sending. A paste is sent at once, see SrcBox_Changed.
-        _debounce.Interval = TimeSpan.FromMilliseconds(_claude || _chatgpt ? 1000 : 800);
+        _debounce.Interval = TimeSpan.FromMilliseconds(UsesModel ? 1000 : 800);
         UpdateBadge();
         // Each subscription engine remembers its own tone. DeepL hides the tone switch.
-        TonePanel.Visibility = _claude || _chatgpt ? Visibility.Visible : Visibility.Collapsed;
+        TonePanel.Visibility = UsesModel ? Visibility.Visible : Visibility.Collapsed;
         _changingTone = true;
         try
         {
-            var tone = ClaudeCli.NormalizeTone(_chatgpt ? _cfg.ChatGptTone : _cfg.ClaudeTone);
+            var tone = ClaudeCli.NormalizeTone(_gemini ? _cfg.GeminiTone : _chatgpt ? _cfg.ChatGptTone : _cfg.ClaudeTone);
             ToneFormalRb.IsChecked = tone == ClaudeCli.ToneFormal;
             ToneInformalRb.IsChecked = tone == ClaudeCli.ToneInformal;
             ToneNaturalRb.IsChecked = tone == ClaudeCli.ToneNatural;
         }
         finally { _changingTone = false; }
         if (IsLoaded)
-            SetStatus(_chatgpt ? (_cfg.ChatGptConnected ? Loc.StatusReady : Loc.StatusChatGptDisconnected)
+            SetStatus(_gemini ? (_cfg.GeminiConnected ? Loc.StatusReady : Loc.StatusGeminiDisconnected)
+                              : _chatgpt ? (_cfg.ChatGptConnected ? Loc.StatusReady : Loc.StatusChatGptDisconnected)
                               : _claude ? (_cfg.ClaudeConnected ? Loc.StatusReady : Loc.StatusClaudeDisconnected)
                               : (_token != null ? Loc.StatusReady : Loc.StatusNotAuth));
         // Start Claude Code ahead of time, so the first translation does not wait for it. With
@@ -731,11 +808,15 @@ public partial class MainWindow : Window
         else                                 _claudeSession.DropSpare();
         if (_chatgpt && _cfg.ChatGptConnected) _chatGpt.WarmUp();
         else _chatGpt.Stop();
+        if (_gemini && _cfg.GeminiConnected) _geminiClient.WarmUp();
+        else _geminiClient.Stop();
         // The first switch to Claude after start checks the sign-in, so the badge shows the plan.
         if (IsLoaded && _claude && _cfg.ClaudeConnected && _claudeBadge.Length == 0)
             _ = CheckClaudeAsync(quiet: true);
         if (IsLoaded && _chatgpt && _cfg.ChatGptConnected && _chatGptBadge.Length == 0)
             _ = CheckChatGptAsync(quiet: true);
+        if (IsLoaded && _gemini && _cfg.GeminiConnected && _geminiBadge.Length == 0)
+            _ = CheckGeminiAsync(quiet: true);
         _debounce.Stop();
         _debounce.Start();
     }
@@ -782,6 +863,8 @@ public partial class MainWindow : Window
         MenuItemClaudeDisconnect.Visibility = claudeOn ? Visibility.Visible   : Visibility.Collapsed;
         MenuItemChatGptConnect.Visibility = _cfg.ChatGptConnected ? Visibility.Collapsed : Visibility.Visible;
         MenuItemChatGptDisconnect.Visibility = _cfg.ChatGptConnected ? Visibility.Visible : Visibility.Collapsed;
+        MenuItemGeminiConnect.Visibility = _cfg.GeminiConnected ? Visibility.Collapsed : Visibility.Visible;
+        MenuItemGeminiDisconnect.Visibility = _cfg.GeminiConnected ? Visibility.Visible : Visibility.Collapsed;
 
         var cm = SettingsBtn.ContextMenu;
         cm.PlacementTarget = SettingsBtn;
@@ -925,6 +1008,8 @@ public partial class MainWindow : Window
         MenuItemClaudeCareful.Header    = Loc.MenuClaudeCareful;
         MenuItemChatGptConnect.Header = Loc.MenuChatGptConnect;
         MenuItemChatGptDisconnect.Header = Loc.MenuChatGptDisconnect;
+        MenuItemGeminiConnect.Header = Loc.MenuGeminiConnect;
+        MenuItemGeminiDisconnect.Header = Loc.MenuGeminiDisconnect;
         MenuItemStartup.Header  = Loc.MenuStartup;
         MenuItemStartInTray.Header    = Loc.MenuStartInTray;
         MenuItemMinimizeToTray.Header = Loc.MenuMinimizeToTray;
@@ -945,6 +1030,7 @@ public partial class MainWindow : Window
     string _deeplBadge  = "";
     string _claudeBadge = "";
     string _chatGptBadge = "";
+    string _geminiBadge = "";
 
     void SetBadge(string text)
     {
@@ -954,7 +1040,8 @@ public partial class MainWindow : Window
 
     void UpdateBadge()
     {
-        var text = _chatgpt ? (_cfg.ChatGptConnected ? _chatGptBadge : "")
+        var text = _gemini ? (_cfg.GeminiConnected ? _geminiBadge : "")
+                 : _chatgpt ? (_cfg.ChatGptConnected ? _chatGptBadge : "")
                  : _claude ? (_cfg.ClaudeConnected ? _claudeBadge : "") : _deeplBadge;
         Badge.Text           = text;
         BadgePill.Visibility = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -976,7 +1063,7 @@ public partial class MainWindow : Window
     // because Claude needs no DeepL login.
     void SetAuthStatus(string text)
     {
-        if (_claude || _chatgpt) { if (StatusText.Text == Loc.StatusChecking) SetStatus(Loc.StatusReady); return; }
+        if (UsesModel) { if (StatusText.Text == Loc.StatusChecking) SetStatus(Loc.StatusReady); return; }
         SetStatus(text);
     }
 

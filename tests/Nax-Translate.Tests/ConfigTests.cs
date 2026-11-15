@@ -22,17 +22,19 @@ public sealed class ConfigTests : IDisposable
     }
 
     [Fact]
-    public void stored_old_sonnet_default_moves_to_haiku_once_and_later_choice_is_kept()
+    public void stored_haiku_from_speed_default_moves_back_to_sonnet_once_and_later_choice_is_kept()
     {
+        // 1.4.1 to 1.4.4 stored Haiku as the default; the translation checks showed it answering in
+        // the wrong language, so it moves back to Sonnet once.
         Directory.CreateDirectory(_dir);
-        File.WriteAllText(ConfigPath, "{\"claude_model\":\"sonnet\"}");
+        File.WriteAllText(ConfigPath, "{\"claude_model\":\"haiku\",\"claude_model_reviewed\":true}");
         var cfg = Config.Load(ConfigPath);
-        Assert.Equal("haiku", cfg.ClaudeModel);
+        Assert.Equal("sonnet", cfg.ClaudeModel);
 
-        // Sonnet picked in the menu afterwards must survive a restart.
-        cfg.ClaudeModel = "sonnet";
+        // Haiku picked in the menu afterwards must survive a restart.
+        cfg.ClaudeModel = "haiku";
         cfg.Save();
-        Assert.Equal("sonnet", Config.Load(ConfigPath).ClaudeModel);
+        Assert.Equal("haiku", Config.Load(ConfigPath).ClaudeModel);
     }
 
     [Theory]

@@ -135,17 +135,19 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         public readonly List<PendingRequest> Requests = [];
         public readonly List<PendingClaude> ClaudeProcesses = [];
         public readonly FakeChatGpt ChatGpt = new();
+        public readonly FakeChatGpt Gemini = new();
         public readonly Config Settings;
         public bool CompleteUnexpectedRequests;
         public readonly MainWindow Window;
 
-        public Harness(bool claude = false, bool chatgpt = false)
+        public Harness(bool claude = false, bool chatgpt = false, bool gemini = false)
         {
             var cfg = Config.Load(Path.Combine(_dir, "config.json"));
             Settings = cfg;
             cfg.ClaudeConnected = claude;
             cfg.ChatGptConnected = chatgpt;
-            cfg.Engine = chatgpt ? "chatgpt" : claude ? "claude" : "classic";
+            cfg.GeminiConnected = gemini;
+            cfg.Engine = gemini ? "gemini" : chatgpt ? "chatgpt" : claude ? "claude" : "classic";
             _http = new ResilientHttp(() => new FakeHandler((_, ct) =>
             {
                 var request = new PendingRequest { Token = ct };
@@ -159,7 +161,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
                 ClaudeProcesses.Add(process);
                 return process;
             });
-            Window = new MainWindow(cfg, _http, session, ChatGpt);
+            Window = new MainWindow(cfg, _http, session, ChatGpt, Gemini);
         }
 
         public Task Start(string text = "Hello world")
@@ -174,6 +176,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
             Window.Close();
             foreach (var request in Requests) request.Complete();
             foreach (var request in ChatGpt.Requests) request.Answer.TrySetCanceled();
+            foreach (var request in Gemini.Requests) request.Answer.TrySetCanceled();
             _http.Dispose();
             if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
         }
@@ -652,4 +655,54 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         Assert.True(ClaudeCli.LooksUntranslated("Hallo Welt", "hallo welt"));
         Assert.False(ClaudeCli.LooksUntranslated("Hallo Welt", "Hello world"));
     }
+
+    [Fact]
+    public Task gemini_routing_uses_its_own_tone_and_never_contacts_other_engines() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(gemini: true);
+        h.Window.ToneFormalRb.IsChecked = true;
+        var run = h.Start();
+        var request = Assert.Single(h.Gemini.Requests);
+        Assert.Equal("formal", request.Tone);
+        Assert.Equal("formal", h.Settings.GeminiTone);
+        Assert.Equal("natural", h.Settings.ChatGptTone);
+        request.Answer.SetResult(("Hallo Welt", "EN"));
+        await run;
+        Assert.Equal("Hallo Welt", h.Window.TgtBox.Text);
+        Assert.Contains("Gemini", h.Window.StatusText.Text);
+        Assert.Empty(h.Requests);
+        Assert.Empty(h.ChatGpt.Requests);
+        Assert.Empty(h.ClaudeProcesses);
+    });
+
+    [Fact]
+    public Task disconnected_gemini_sends_nothing_and_its_backend_follows_selection_and_exit() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(gemini: true);
+        Assert.True(h.Gemini.Warmups > 0);
+        var stops = h.Gemini.Stops;
+        h.Window.ClassicRb.IsChecked = true;
+        Assert.Equal(++stops, h.Gemini.Stops);
+        h.Window.GeminiRb.IsChecked = true;
+        h.Window.MenuItemGeminiDisconnect.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Assert.False(h.Settings.GeminiConnected);
+        await h.Start();
+        Assert.Empty(h.Gemini.Requests);
+        Assert.Equal(Loc.StatusGeminiDisconnected, h.Window.StatusText.Text);
+        var beforeExit = h.Gemini.Stops;
+        h.Window.StopBackgroundWork();
+        Assert.True(h.Gemini.Stops > beforeExit);
+    });
+
+    [Fact]
+    public Task gemini_answer_for_text_already_in_target_switches_dropdown_without_second_request() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(gemini: true);
+        h.Window.TgtCombo.SelectedItem = "Deutsch";
+        var run = h.Start("Hallo Welt");
+        Assert.Single(h.Gemini.Requests).Answer.SetResult(("Hello world", "DE"));
+        await run;
+        Assert.Single(h.Gemini.Requests);
+        Assert.Equal("Englisch (US)", h.Window.TgtCombo.SelectedItem);
+    });
 }

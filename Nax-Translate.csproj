@@ -11,8 +11,8 @@
     <RootNamespace>NaxTranslate</RootNamespace>
     <AssemblyName>Nax-Translate</AssemblyName>
     <Product>Nax-Translate</Product>
-    <Description>Desktop translator for Windows with DeepL Pro, Claude and ChatGPT</Description>
-    <Version>1.4.4</Version>
+    <Description>Desktop translator for Windows with DeepL Pro, Claude, ChatGPT and Gemini</Description>
+    <Version>1.5.0</Version>
     <Optimize>true</Optimize>
   </PropertyGroup>
 

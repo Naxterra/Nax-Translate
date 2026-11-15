@@ -6,9 +6,9 @@ using NaxTranslate;
 // Opt-in live checks using synthetic text. Review meaning as well as language in the JSON output;
 // a successful request or correct source-language label does not prove translation accuracy.
 var engine = args.FirstOrDefault(a => a.StartsWith("--engine="))?[9..] ?? "chatgpt";
-if (engine is not ("chatgpt" or "claude")) throw new ArgumentException("Use --engine=chatgpt|claude.");
+if (engine is not ("chatgpt" or "claude" or "gemini")) throw new ArgumentException("Use --engine=chatgpt|claude|gemini.");
 var model = args.FirstOrDefault(a => a.StartsWith("--model="))?[8..]
-    ?? (engine == "claude" ? ClaudeCli.DefaultModel : ChatGptCli.DefaultModel);
+    ?? (engine == "claude" ? ClaudeCli.DefaultModel : engine == "gemini" ? GeminiServer.DefaultModel : ChatGptCli.DefaultModel);
 var suite = args.FirstOrDefault(a => a.StartsWith("--suite="))?[8..] ?? "all";
 if (!Regex.IsMatch(model, @"\A[A-Za-z0-9._-]+\z") || suite is not ("core" or "focused" or "edge" or "linguistic" or "short" or "holdout" or "all"))
     throw new ArgumentException("Use --model=<model> and --suite=core|focused|edge|linguistic|short|holdout|all.");
@@ -16,7 +16,7 @@ var output = Path.GetFullPath(args.FirstOrDefault(a => a.StartsWith("--output=")
     ?? Path.Combine("artifacts", $"translation-check-{model}-{suite}.json"));
 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
 var results = new List<Result>();
-var client = new ChatGptServer();
+IChatGptClient client = engine == "gemini" ? new GeminiServer() : new ChatGptServer();
 using var claude = new ClaudeSession();
 try
 {
@@ -25,7 +25,7 @@ try
         claude.WarmUp(model);
         if (!(await ClaudeCli.CheckAuthAsync()).LoggedIn) throw new InvalidOperationException("Claude is not signed in.");
     }
-    else if (!await client.CheckAuthAsync()) throw new InvalidOperationException("ChatGPT is not signed in.");
+    else if (!await client.CheckAuthAsync()) throw new InvalidOperationException(engine + " is not signed in.");
     var cases = new List<Case>();
     if (suite != "edge")
         foreach (var sample in (suite == "holdout" ? Corpus.Holdout : Corpus.Samples).Where(s => suite == "short" ? s.Id == "short"

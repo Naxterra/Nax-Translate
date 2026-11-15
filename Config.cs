@@ -41,12 +41,12 @@ public class Config
 
     [JsonPropertyName("src_lang")]  public string  SrcLang  { get; set; } = "auto";
     [JsonPropertyName("tgt_lang")]  public string  TgtLang  { get; set; } = "de";
-    // "classic" or "nextgen" for DeepL, "claude", or "chatgpt".
+    // "classic" or "nextgen" for DeepL, "claude", "chatgpt", or "gemini".
     [JsonPropertyName("engine")]    public string  Engine   { get; set; } = "classic";
     // The model the Claude engine asks for, as an alias such as "sonnet" or "haiku".
     [JsonPropertyName("claude_model")] public string ClaudeModel { get; set; } = ClaudeCli.DefaultModel;
-    // Set once the Claude model has been moved to the faster default, see Load.
-    [JsonPropertyName("claude_model_reviewed")] public bool ClaudeModelReviewed { get; set; }
+    // Set once a stored Haiku has been moved back to Sonnet, see Load.
+    [JsonPropertyName("claude_model_quality_reviewed")] public bool ClaudeModelQualityReviewed { get; set; }
     // The tone of Claude translations: "natural", "formal" or "informal".
     [JsonPropertyName("claude_tone")]  public string ClaudeTone  { get; set; } = ClaudeCli.ToneNatural;
     // Whether Claude is connected. While it is not, nothing is sent to Claude and no Claude Code
@@ -56,6 +56,10 @@ public class Config
     // Pin a translation model rather than inheriting the coding CLI's changing default.
     [JsonPropertyName("chatgpt_model")] public string ChatGptModel { get; set; } = ChatGptCli.DefaultModel;
     [JsonPropertyName("chatgpt_tone")] public string ChatGptTone { get; set; } = ClaudeCli.ToneNatural;
+    // Gemini through the Antigravity CLI: connected or not, the model, and its own tone.
+    [JsonPropertyName("gemini_connected")] public bool GeminiConnected { get; set; } = true;
+    [JsonPropertyName("gemini_model")] public string GeminiModel { get; set; } = GeminiServer.DefaultModel;
+    [JsonPropertyName("gemini_tone")] public string GeminiTone { get; set; } = ClaudeCli.ToneNatural;
     // Whether the app starts with its window hidden, showing only the tray icon.
     [JsonPropertyName("start_in_tray")]    public bool StartInTray     { get; set; } = true;
     // Whether minimizing the window hides it to the tray instead of the taskbar.
@@ -77,14 +81,16 @@ public class Config
         catch { cfg = new(); }
         cfg.FilePath = path;
         cfg.ChatGptModel = ChatGptCli.NormalizeModel(cfg.ChatGptModel);
-        // Up to 1.4.0 every settings file stored Sonnet, the old default, because there was no way
-        // to pick a model. Sonnet now takes about three times as long as Haiku for a sentence, so
-        // that stored default moves to Haiku once. A model picked in the menu afterwards is kept.
-        if (!cfg.ClaudeModelReviewed)
+        cfg.GeminiModel  = GeminiServer.NormalizeModel(cfg.GeminiModel);
+        // Versions 1.4.1 to 1.4.4 made Haiku the Claude default for speed. The translation checks
+        // then showed Haiku answering in the wrong language or not translating at all, while Sonnet
+        // got nearly every case right at almost the same speed. A stored Haiku therefore moves to
+        // Sonnet once. A model picked in the menu afterwards is kept.
+        if (!cfg.ClaudeModelQualityReviewed)
         {
-            if (string.Equals(cfg.ClaudeModel, "sonnet", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(cfg.ClaudeModel, "haiku", StringComparison.OrdinalIgnoreCase))
                 cfg.ClaudeModel = ClaudeCli.DefaultModel;
-            cfg.ClaudeModelReviewed = true;
+            cfg.ClaudeModelQualityReviewed = true;
         }
 
         cfg.DlAccess     = Unprotect(cfg.DlAccessProtected);
