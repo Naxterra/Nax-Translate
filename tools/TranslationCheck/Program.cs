@@ -53,7 +53,7 @@ try
         Console.WriteLine($"{test.Id} {test.Source}->{test.Target} ({test.ExpectedTarget}) {result.Seconds:F2}s: {result.Output?.Replace("\n", " | ") ?? result.Error}");
     }
 }
-finally { client.Stop(); }
+finally { client.Stop(); GeminiServer.WaitForCleanup(TimeSpan.FromSeconds(5)); }
 var times = results.Where(r => r.Error == null).Select(r => r.Seconds).Order().ToArray();
 Console.WriteLine($"{results.Count} cases, {results.Count(r => r.Error != null)} request/label errors; output: {output}");
 if (times.Length > 0) Console.WriteLine($"Median: {Quantile(times, .5):F2}s; p90: {Quantile(times, .9):F2}s; max: {times[^1]:F2}s.");

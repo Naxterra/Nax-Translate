@@ -34,6 +34,12 @@ public sealed class GeminiServer : IChatGptClient
     /// <summary>Gemini 3.8 Flash with low thinking: about two seconds per sentence in a ready process.</summary>
     public const string DefaultModel = "gemini-3.8-flash-low";
 
+    /// <summary>
+    /// Waits until every stopped Antigravity process has ended and its files are gone. A program
+    /// calls this after Stop and before it exits, because the removal runs in the background.
+    /// </summary>
+    public static void WaitForCleanup(TimeSpan limit) => GeminiConnection.WaitForCleanup(limit);
+
     internal static string NormalizeModel(string? model) =>
         string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim();
 
@@ -188,6 +194,9 @@ public sealed class GeminiServer : IChatGptClient
         lock (_state) connection = _connection;
         if (connection is { HasExited: false }) return connection;
         DropConnection();
+        // The data folder of a process that was just stopped is still being removed. A new process
+        // starts only after that, so the removal cannot delete the new process's settings or session.
+        await GeminiConnection.PendingCleanup.WaitAsync(ct);
         lock (_state)
         {
             ct.ThrowIfCancellationRequested();
@@ -249,6 +258,7 @@ public sealed class GeminiServer : IChatGptClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && !generation.IsCancellationRequested)
         { DropConnection(); throw new TimeoutException(Loc.StatusGeminiAuthTimeout); }
+        catch (GeminiRequestException ex) when (ex.IsSignInRequired) { DropConnection(); return false; }
         catch { DropConnection(); throw; }
         finally { _gate.Release(); }
     }
@@ -298,6 +308,8 @@ public sealed class GeminiServer : IChatGptClient
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && !generation.IsCancellationRequested)
         { DropConnection(); throw new TimeoutException(Loc.StatusGeminiTimeout); }
         catch (UnusableReplyException) { throw; } // the connection is fine; the window asks once more
+        // A sign-in that ran out while the app was open shows up on the prompt, not on session/new.
+        catch (GeminiRequestException ex) when (ex.IsSignInRequired) { DropConnection(); throw new GeminiSignInException(); }
         catch { DropConnection(); throw; }        // no model retry; the request may already count against usage
         finally
         {
@@ -335,8 +347,10 @@ internal sealed class GeminiRequestException(int? code, string message) : Except
 {
     /// <summary>The Agent Client Protocol's error code for "Authentication required".</summary>
     internal const int AuthRequiredCode = -32000;
+    /// <summary>How agy 1.5.9 words a missing sign-in in its own log.</summary>
+    internal const string NotSignedInText = "not logged into Antigravity";
     public int? Code { get; } = code;
-    public bool IsSignInRequired => Code == AuthRequiredCode;
+    public bool IsSignInRequired => Code == AuthRequiredCode || Message.Contains(NotSignedInText, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -564,6 +578,35 @@ internal sealed class GeminiConnection : IGeminiConnection
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
+    /// <summary>
+    /// Antigravity's settings for the app's data folder. "strict" makes Antigravity ask the app
+    /// before every tool action, file reads included, and the app never allows one: a request ends
+    /// the process. Checked with agy 1.5.9 on 2026-11-15: even its default coding agent then asked
+    /// before writing or reading a file, and nothing was written while the request was unanswered.
+    /// Without this setting, the default agent wrote a file before the app heard about the tool call.
+    /// </summary>
+    internal const string Settings = """{ "toolPermission": "strict" }""";
+
+    /// <summary>Writes the settings. A process is only started once they are in place.</summary>
+    internal static void WriteSettings(string? root = null)
+    {
+        root ??= DataRoot;
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "settings.json"), Settings, new UTF8Encoding(false));
+    }
+
+    static readonly object CleanupLock = new();
+    static Task _pendingCleanup = Task.CompletedTask;
+
+    /// <summary>Finishes when every stopped process has ended and its files have been removed.</summary>
+    internal static Task PendingCleanup { get { lock (CleanupLock) return _pendingCleanup; } }
+
+    /// <summary>Waits for the cleanup at exit, so the app's Gemini files do not outlive it.</summary>
+    internal static void WaitForCleanup(TimeSpan limit)
+    {
+        try { PendingCleanup.Wait(limit); } catch (Exception) { }
+    }
+
     internal static string WorkingDirectoryOf(IGeminiConnection connection) =>
         connection is GeminiConnection real ? real._directory : Path.GetTempPath();
 
@@ -584,6 +627,7 @@ internal sealed class GeminiConnection : IGeminiConnection
     internal GeminiConnection()
     {
         var exe = FindExecutable() ?? throw new GeminiNotFoundException();
+        WriteSettings();
         _directory = TempWork.NewFolder();
         var agents = Path.Combine(_directory, ".agents", "agents");
         Directory.CreateDirectory(agents);
@@ -680,7 +724,14 @@ internal sealed class GeminiConnection : IGeminiConnection
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         KillNow();
-        try { _process.WaitForExit(1000); } catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
+        // Waiting for the process to end and deleting its files can take a second, so it runs in the
+        // background instead of holding up the window. The next process waits for it, see PendingCleanup.
+        lock (CleanupLock) _pendingCleanup = _pendingCleanup.ContinueWith(_ => Cleanup(), TaskScheduler.Default);
+    }
+
+    void Cleanup()
+    {
+        try { _process.WaitForExit(2000); } catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
         _process.Dispose();
         TempWork.Remove(_directory);
         // Antigravity also keeps summaries and caches of the sessions; none of it is needed again.

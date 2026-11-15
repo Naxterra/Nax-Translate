@@ -60,12 +60,15 @@ public partial class App : Application
             return;
         }
 
-        // The uninstaller runs the app once with this switch, so that nothing the app wrote to
-        // the registry outlives it: the "Start with Windows" entry and a login's deepl:// handler.
+        // The uninstaller runs the app once with this switch, so that nothing the app wrote outlives
+        // it: the "Start with Windows" entry, a login's deepl:// handler, the ChatGPT and Gemini working
+        // folders and the app's Antigravity data folder. The uninstaller has closed the app before.
         if (e.Args.Length > 0 && e.Args[0] == "--uninstall-cleanup")
         {
             AuthManager.RestoreLeftoverSchemeHandler();
             StartupHelper.SetEnabled(false);
+            TempWork.RemoveLeftovers();
+            GeminiConnection.WipeData();
             Shutdown();
             return;
         }
@@ -194,6 +197,8 @@ public partial class App : Application
     {
         // Also covers ending the app through Windows sign-out or shutdown, which skips ExitApp.
         (MainWindow as MainWindow)?.StopBackgroundWork();
+        // A stopped Gemini process removes its files in the background; the app waits for that.
+        GeminiServer.WaitForCleanup(TimeSpan.FromSeconds(3));
         TrayIcon?.Dispose();
         Hotkey?.Dispose();
         base.OnExit(e);

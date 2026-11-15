@@ -20,7 +20,7 @@ public sealed class GeminiServerTests
         public string StopReason = "end_turn";
         /// <summary>What Antigravity announces after a session starts. Null sends no list at all.</summary>
         public string[]? Commands = ["plan", "grill-me", "learn"];
-        public GeminiRequestException? SessionError;
+        public GeminiRequestException? SessionError, PromptError;
         public string Reply = "lang: DE\nThe delivery will not arrive tomorrow.";
         int _sessions;
 
@@ -41,6 +41,7 @@ public sealed class GeminiServerTests
                         { sessionUpdate = "available_commands_update", availableCommands = Commands.Select(c => new { name = c, description = "" }).ToArray() } } }));
                     return Task.FromResult(Json(new { sessionId = id }));
                 case "session/prompt":
+                    if (PromptError != null) throw PromptError;
                     var sid = p.GetProperty("sessionId").GetString();
                     if (ToolCall)
                         _notifications.Enqueue(Json(new { jsonrpc = "2.0", method = "session/update", @params = new { sessionId = sid, update = new { sessionUpdate = "tool_call", title = "run_command" } } }));
@@ -416,5 +417,29 @@ public sealed class GeminiServerTests
         var sent = input.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => JsonDocument.Parse(l).RootElement.GetProperty("id").GetInt32()).ToArray();
         Assert.Equal([1, 2], sent);
+    }
+
+    [Fact]
+    public async Task sign_in_that_ran_out_while_translating_is_reported_as_missing_sign_in()
+    {
+        // The wording agy 1.5.9 uses in its log when it has no valid sign-in.
+        var connection = new Connection { PromptError = new GeminiRequestException(-32603, "error getting token source: You are not logged into Antigravity.") };
+        var client = new GeminiServer(() => connection);
+        await Assert.ThrowsAsync<GeminiSignInException>(() => Translate(client));
+        Assert.True(connection.HasExited);
+        client.Stop();
+    }
+
+    [Fact]
+    public void antigravity_is_told_to_ask_the_app_before_every_tool()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "NaxTranslate.Tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            GeminiConnection.WriteSettings(root);
+            using var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "settings.json")));
+            Assert.Equal("strict", settings.RootElement.GetProperty("toolPermission").GetString());
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
 }
