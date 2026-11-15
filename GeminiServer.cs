@@ -40,7 +40,7 @@ public sealed class GeminiServer : IChatGptClient
     readonly Func<IGeminiConnection> _factory;
     readonly SemaphoreSlim _gate = new(1, 1);
     readonly object _state = new();
-    readonly TimeSpan _timeout;
+    readonly TimeSpan _timeout, _agentWait;
     CancellationTokenSource _generation = new();
     IGeminiConnection? _connection;
 
@@ -51,8 +51,13 @@ public sealed class GeminiServer : IChatGptClient
     string _lastModel = DefaultModel;
 
     public GeminiServer() : this(() => new GeminiConnection()) { }
-    internal GeminiServer(Func<IGeminiConnection> factory, TimeSpan? timeout = null)
-    { _factory = factory; _timeout = timeout ?? TimeSpan.FromSeconds(90); }
+    internal GeminiServer(Func<IGeminiConnection> factory, TimeSpan? timeout = null, TimeSpan? agentWait = null)
+    {
+        _factory = factory;
+        _timeout = timeout ?? TimeSpan.FromSeconds(90);
+        // In a live run the command list arrived about 30 ms after the session started.
+        _agentWait = agentWait ?? TimeSpan.FromSeconds(5);
+    }
 
     CancellationToken Generation { get { lock (_state) return _generation.Token; } }
 
@@ -91,15 +96,65 @@ public sealed class GeminiServer : IChatGptClient
         connection?.Dispose();
     }
 
-    /// <summary>Starts a session and sets its model, without sending any text. Null when not signed in.</summary>
+    /// <summary>
+    /// Starts a session and sets its model, without sending any text. Null when not signed in. A
+    /// session is only used once it is confirmed to run the app's agent, see ConfirmTranslationAgentAsync.
+    /// When this throws, the caller drops the connection, which also removes the session's files.
+    /// </summary>
     async Task<string?> PrepareSessionAsync(IGeminiConnection connection, string model, CancellationToken ct)
     {
         var sessionId = await NewSessionAsync(connection, GeminiConnection.WorkingDirectoryOf(connection), ct);
         if (sessionId == null) return null;
         await connection.RequestAsync("session/set_model", new { sessionId, modelId = model }, ct);
-        connection.TakeNotifications();
+        await ConfirmTranslationAgentAsync(connection, sessionId, _agentWait, ct);
         lock (_state) { _readySession = sessionId; _readyModel = model; }
         return sessionId;
+    }
+
+    /// <summary>
+    /// The commands Antigravity 1.5.9 offers in a session of the app's agent. Its default coding agent
+    /// offers more, such as goal, compact, schedule and browser, which come with its built-in tools.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> TranslationAgentCommands = new HashSet<string>(["plan", "grill-me", "learn"]);
+
+    /// <summary>
+    /// The session/new answer does not name the agent or its tools, so the app checks the command
+    /// list Antigravity announces right after a session starts. Text is only sent when that list
+    /// arrived and holds nothing beyond the commands of the app's agent. A session of the default
+    /// coding agent, or one whose list never arrives, is refused.
+    /// </summary>
+    internal static async Task ConfirmTranslationAgentAsync(IGeminiConnection connection, string sessionId, TimeSpan wait, CancellationToken ct)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(wait);
+        while (true)
+        {
+            foreach (var note in connection.TakeNotifications())
+            {
+                if (CommandsOf(sessionId, note) is not { } commands) continue;
+                if (commands.All(TranslationAgentCommands.Contains)) return;
+                throw new Exception(Loc.StatusGeminiAgentUnconfirmed);
+            }
+            try { await Task.Delay(20, limit.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            { throw new Exception(Loc.StatusGeminiAgentUnconfirmed); }
+        }
+    }
+
+    static IReadOnlyList<string>? CommandsOf(string sessionId, JsonElement note)
+    {
+        if (!note.TryGetProperty("method", out var method) || method.GetString() != "session/update"
+            || !note.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object
+            || !p.TryGetProperty("sessionId", out var sid) || sid.GetString() != sessionId
+            || !p.TryGetProperty("update", out var update) || update.ValueKind != JsonValueKind.Object
+            || !update.TryGetProperty("sessionUpdate", out var kind) || kind.GetString() != "available_commands_update"
+            || !update.TryGetProperty("availableCommands", out var list) || list.ValueKind != JsonValueKind.Array) return null;
+        var names = new List<string>();
+        foreach (var command in list.EnumerateArray())
+            // A command without a readable name counts as unknown, which refuses the session.
+            names.Add(command.ValueKind == JsonValueKind.Object && command.TryGetProperty("name", out var n)
+                      && n.ValueKind == JsonValueKind.String ? n.GetString()! : "");
+        return names;
     }
 
     /// <summary>After a translation, prepares the session for the next one while the window shows the result.</summary>
@@ -116,11 +171,15 @@ public sealed class GeminiServer : IChatGptClient
                 if (connection is not { HasExited: false }) return;
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(generation);
                 timeout.CancelAfter(TimeSpan.FromSeconds(20));
-                await PrepareSessionAsync(connection, model, timeout.Token);
+                try { await PrepareSessionAsync(connection, model, timeout.Token); }
+                // A failed or timed-out preparation may have left a session behind, and its process
+                // is in an unknown state. Dropping it, as every other failure path does, removes both;
+                // the next translation starts a new process. After a disconnect Stop has done that already.
+                catch (Exception) when (!generation.IsCancellationRequested) { DropConnection(); }
             }
             finally { _gate.Release(); }
         }
-        catch (Exception) { } // The next translation starts its own session instead.
+        catch (Exception) { } // Nothing is waiting for this; the next translation reports any problem.
     }
 
     async Task<IGeminiConnection> ReadyAsync(CancellationToken ct)
@@ -158,15 +217,15 @@ public sealed class GeminiServer : IChatGptClient
             var result = await connection.RequestAsync("session/new", new { cwd, mcpServers = Array.Empty<object>() }, ct);
             return result.TryGetProperty("sessionId", out var id) ? id.GetString() : null;
         }
-        catch (GeminiRequestException ex) when (ex.Message.Contains("auth", StringComparison.OrdinalIgnoreCase)
-                                             || ex.Message.Contains("login", StringComparison.OrdinalIgnoreCase)
-                                             || ex.Message.Contains("sign", StringComparison.OrdinalIgnoreCase))
-        { return null; }
+        catch (GeminiRequestException ex) when (ex.IsSignInRequired) { return null; }
     }
 
     static async Task CloseSessionAsync(IGeminiConnection connection, string sessionId)
     {
-        try { await connection.RequestAsync("session/close", new { sessionId }, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)); }
+        // The close request itself is cancelled after five seconds. A reply that arrives later finds
+        // no request waiting for it and is dropped, so it can never reach the next request.
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await connection.RequestAsync("session/close", new { sessionId }, limit.Token); }
         catch (Exception) { } // Closing only frees memory early; the files are removed either way.
         connection.ForgetSession(sessionId);
     }
@@ -272,7 +331,165 @@ public sealed class GeminiServer : IChatGptClient
 }
 
 /// <summary>An error answer to a JSON-RPC request.</summary>
-internal sealed class GeminiRequestException(string message) : Exception(message);
+internal sealed class GeminiRequestException(int? code, string message) : Exception(message)
+{
+    /// <summary>The Agent Client Protocol's error code for "Authentication required".</summary>
+    internal const int AuthRequiredCode = -32000;
+    public int? Code { get; } = code;
+    public bool IsSignInRequired => Code == AuthRequiredCode;
+}
+
+/// <summary>
+/// JSON-RPC over the agent's standard input and output. One loop reads everything the agent sends:
+/// replies go to the waiting request with the same id, notifications are queued in order, and a
+/// reply whose request already gave up is dropped. A tool call or a request from the agent ends
+/// the channel at once and calls onToolUse, which stops the process, so a tool is not left running
+/// until the turn ends.
+/// </summary>
+internal sealed class AcpChannel
+{
+    const int MaxNotifications = 4096;
+    const int MaxLineLength = 1_000_000;
+
+    readonly TextReader _output;
+    readonly TextWriter _input;
+    readonly Action _onToolUse;
+    readonly SemaphoreSlim _write = new(1, 1);
+    readonly object _lock = new();
+    readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pending = [];
+    readonly Queue<JsonElement> _notifications = new();
+    string? _closed;
+    int _id;
+    volatile bool _agentAsked;
+
+    public AcpChannel(TextReader output, TextWriter input, Action onToolUse)
+    {
+        _output = output; _input = input; _onToolUse = onToolUse;
+        _ = Task.Run(ReadLoopAsync);
+    }
+
+    public bool AgentAskedForSomething => _agentAsked;
+    public bool IsClosed { get { lock (_lock) return _closed != null; } }
+
+    public async Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var reply = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int id;
+        lock (_lock)
+        {
+            if (_closed != null) throw new Exception(_closed);
+            id = ++_id;
+            _pending[id] = reply;
+        }
+        try
+        {
+            await WriteAsync(new { jsonrpc = "2.0", id, method, @params = parameters }, ct);
+            return await reply.Task.WaitAsync(ct);
+        }
+        finally { lock (_lock) _pending.Remove(id); }
+    }
+
+    public IReadOnlyList<JsonElement> TakeNotifications()
+    {
+        lock (_lock)
+        {
+            var all = _notifications.ToArray();
+            _notifications.Clear();
+            return all;
+        }
+    }
+
+    async Task WriteAsync(object message, CancellationToken ct)
+    {
+        var line = JsonSerializer.Serialize(message);
+        await _write.WaitAsync(ct);
+        try
+        {
+            await _input.WriteLineAsync(line.AsMemory(), ct);
+            await _input.FlushAsync(ct);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+        {
+            // A write that stopped halfway leaves the agent with a broken line, so the channel is not used again.
+            Close(Loc.StatusGeminiFailed);
+            if (ex is OperationCanceledException) throw;
+            throw new Exception(Loc.StatusGeminiFailed);
+        }
+        finally { _write.Release(); }
+    }
+
+    async Task ReadLoopAsync()
+    {
+        try
+        {
+            while (await _output.ReadLineAsync() is { } line)
+            {
+                if (line.Length > MaxLineLength) break;
+                if (line.Length == 0) continue;
+                JsonElement message;
+                try { using var doc = JsonDocument.Parse(line); message = doc.RootElement.Clone(); }
+                catch (JsonException) { continue; } // a stray log line
+                if (message.ValueKind != JsonValueKind.Object) continue;
+                var hasMethod = message.TryGetProperty("method", out _);
+                var hasId = message.TryGetProperty("id", out var id);
+                if (hasMethod && hasId)
+                {
+                    // The agent asks the app for something (a permission, a file, a terminal). That
+                    // never belongs to a translation, so the agent is stopped instead of answered.
+                    _agentAsked = true;
+                    ToolUsed();
+                    continue;
+                }
+                if (hasMethod)
+                {
+                    if (IsToolUpdate(message)) ToolUsed();
+                    bool full;
+                    lock (_lock) { full = _notifications.Count >= MaxNotifications; if (!full) _notifications.Enqueue(message); }
+                    if (full) break;
+                    continue;
+                }
+                if (!hasId || id.ValueKind != JsonValueKind.Number || !id.TryGetInt32(out var number)) continue;
+                TaskCompletionSource<JsonElement>? waiting;
+                lock (_lock) _pending.Remove(number, out waiting);
+                if (waiting == null) continue; // its request gave up, so the late reply goes nowhere
+                if (message.TryGetProperty("error", out var error))
+                    waiting.TrySetException(new GeminiRequestException(
+                        error.TryGetProperty("code", out var code) && code.TryGetInt32(out var c) ? c : null,
+                        error.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString()! : ""));
+                else
+                    waiting.TrySetResult(message.TryGetProperty("result", out var result) ? result : default);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { }
+        Close(Loc.StatusGeminiFailed);
+    }
+
+    static bool IsToolUpdate(JsonElement message) =>
+        message.TryGetProperty("params", out var p) && p.ValueKind == JsonValueKind.Object
+        && p.TryGetProperty("update", out var update) && update.ValueKind == JsonValueKind.Object
+        && update.TryGetProperty("sessionUpdate", out var kind) && kind.GetString() is "tool_call" or "tool_call_update";
+
+    void ToolUsed()
+    {
+        Close(Loc.StatusGeminiUnexpectedTool);
+        try { _onToolUse(); } catch (Exception) { }
+    }
+
+    /// <summary>Fails every waiting request and every later one with the first reason given.</summary>
+    void Close(string reason)
+    {
+        TaskCompletionSource<JsonElement>[] waiting;
+        lock (_lock)
+        {
+            _closed ??= reason;
+            reason = _closed;
+            waiting = [.. _pending.Values];
+            _pending.Clear();
+        }
+        foreach (var request in waiting) request.TrySetException(new Exception(reason));
+    }
+}
 
 /// <summary>
 /// A private "agy acp" process. It runs in its own working folder that holds only the app's agent
@@ -352,10 +569,17 @@ internal sealed class GeminiConnection : IGeminiConnection
 
     readonly Process _process;
     readonly string _directory;
-    readonly Queue<JsonElement> _notifications = new();
-    int _id, _disposed;
-    public bool AgentAskedForSomething { get; private set; }
-    public bool HasExited { get { try { return _process.HasExited; } catch (InvalidOperationException) { return true; } } }
+    readonly AcpChannel _channel;
+    int _disposed;
+    public bool AgentAskedForSomething => _channel.AgentAskedForSomething;
+    public bool HasExited
+    {
+        get
+        {
+            if (_channel.IsClosed) return true;
+            try { return _process.HasExited; } catch (InvalidOperationException) { return true; }
+        }
+    }
 
     internal GeminiConnection()
     {
@@ -375,7 +599,15 @@ internal sealed class GeminiConnection : IGeminiConnection
         _process = new Process { StartInfo = start };
         try { _process.Start(); }
         catch (Win32Exception) { _process.Dispose(); TempWork.Remove(_directory); throw new GeminiNotFoundException(); }
+        _channel = new AcpChannel(_process.StandardOutput, _process.StandardInput, KillNow);
         _ = DrainErrorsAsync();
+    }
+
+    /// <summary>Ends the process and its session workers at once, which also ends any tool they started.</summary>
+    void KillNow()
+    {
+        try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or ObjectDisposedException) { }
     }
 
     async Task DrainErrorsAsync()
@@ -384,53 +616,10 @@ internal sealed class GeminiConnection : IGeminiConnection
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { }
     }
 
-    async Task SendAsync(object message, CancellationToken ct)
-    {
-        await _process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(message).AsMemory(), ct);
-        await _process.StandardInput.FlushAsync(ct);
-    }
+    public Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken ct) =>
+        _channel.RequestAsync(method, parameters, ct);
 
-    public async Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken ct)
-    {
-        var id = ++_id;
-        await SendAsync(new { jsonrpc = "2.0", id, method, @params = parameters }, ct);
-        while (true)
-        {
-            var line = await _process.StandardOutput.ReadLineAsync(ct);
-            if (line == null || line.Length > 1_000_000) throw new Exception(Loc.StatusGeminiFailed);
-            if (line.Length == 0) continue;
-            JsonElement message;
-            try { using var doc = JsonDocument.Parse(line); message = doc.RootElement.Clone(); }
-            catch (JsonException) { continue; } // a stray log line
-            var hasMethod = message.TryGetProperty("method", out _);
-            var hasId = message.TryGetProperty("id", out var messageId);
-            if (hasMethod && hasId)
-            {
-                // The agent asks the app for something (a permission, a file, a terminal). The app
-                // offers none of that, so it is refused, and the translation will not be shown.
-                AgentAskedForSomething = true;
-                await SendAsync(new { jsonrpc = "2.0", id = messageId, error = new { code = -32601, message = "Not available" } }, ct);
-                continue;
-            }
-            if (hasMethod)
-            {
-                if (_notifications.Count >= 4096) throw new Exception(Loc.StatusGeminiFailed);
-                _notifications.Enqueue(message);
-                continue;
-            }
-            if (!hasId || messageId.ValueKind != JsonValueKind.Number || messageId.GetInt32() != id) continue;
-            if (message.TryGetProperty("error", out var error))
-                throw new GeminiRequestException(error.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "");
-            return message.TryGetProperty("result", out var result) ? result : default;
-        }
-    }
-
-    public IReadOnlyList<JsonElement> TakeNotifications()
-    {
-        var all = _notifications.ToArray();
-        _notifications.Clear();
-        return all;
-    }
+    public IReadOnlyList<JsonElement> TakeNotifications() => _channel.TakeNotifications();
 
     /// <summary>
     /// Deletes a closed session's saved conversation and side files. The session's worker releases
@@ -490,8 +679,7 @@ internal sealed class GeminiConnection : IGeminiConnection
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
+        KillNow();
         try { _process.WaitForExit(1000); } catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
         _process.Dispose();
         TempWork.Remove(_directory);

@@ -50,6 +50,7 @@ public static class Loc
     public static string StatusGeminiTimeout => En ? "Gemini translation timed out. Please try again." : "Zeitüberschreitung bei der Gemini-Übersetzung. Bitte erneut versuchen.";
     public static string StatusGeminiFailed => En ? "Gemini could not complete the translation. Check your sign-in and usage limit, then try again." : "Gemini konnte die Übersetzung nicht abschließen. Anmeldung und Nutzungslimit prüfen und erneut versuchen.";
     public static string StatusGeminiUnexpectedTool => En ? "Gemini tried to use a tool. The translation was rejected." : "Gemini wollte ein Werkzeug verwenden. Die Übersetzung wurde verworfen.";
+    public static string StatusGeminiAgentUnconfirmed => En ? "Antigravity did not confirm the tool-free translation agent, so no text was sent. An update of the Antigravity CLI may need a newer Nax-Translate." : "Antigravity hat den Übersetzungsagenten ohne Werkzeuge nicht bestätigt, daher wurde kein Text gesendet. Nach einem Update der Antigravity CLI ist eventuell ein neueres Nax-Translate nötig.";
     public static string StatusChatGptIsolationFailed => En ? "The ChatGPT backend could not be isolated. No text was sent." : "Das ChatGPT-Backend konnte nicht isoliert werden. Es wurde kein Text verschickt.";
     public static string StatusClaudeChecking => En ? "Checking the Claude Code sign-in…" : "Anmeldung bei Claude Code wird geprüft…";
     public static string StatusClaudeConnected(string? plan) =>
