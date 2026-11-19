@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     bool                      _stopped;
     bool                      _pastePending;
     int                       _pasteVersion;
+    bool                      _loadingClipboard;
     readonly SemaphoreSlim    _refreshLock = new(1, 1);
 
     // ── Auto-refresh and offline-retry timers ──
@@ -538,7 +539,12 @@ public partial class MainWindow : Window
                 // The token ran out between refresh checks. Renew it once and try again.
                 await RefreshTokenAsync(force: true);
                 ct.ThrowIfCancellationRequested();
-                if (_token == null) { _failed = false; return; }   // status already says "not logged in"
+                if (_token == null)
+                {
+                    _failed = false;
+                    _lastSrc = "";
+                    return; // Status already says "not logged in".
+                }
                 result = await Run(tgtLang);
             }
             ct.ThrowIfCancellationRequested();
@@ -719,6 +725,7 @@ public partial class MainWindow : Window
         // it would never be stopped when the text gets too short to translate.
         InvalidateTranslation(optionsChanged: false);
         _debounce.Stop();
+        if (_loadingClipboard) return; // Ctrl+C+C starts the request after setting the caret.
         // A paste or another large insertion is finished text, so it is translated at once instead
         // of after the typing pause. Text over the limit also goes this way, so TranslateAsync can
         // say why nothing is translated.
@@ -961,24 +968,52 @@ public partial class MainWindow : Window
         Loc.SetLanguage(lang);
     }
 
-    // Called by App when Ctrl+C+C fires
+    internal void ShowForUser()
+    {
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        if (!IsVisible) Show();
+        if (Activate() || Topmost) return;
+
+        // Windows can decline focus when another app received Ctrl+C. Raise this window
+        // for the explicit open action, then return it to the normal Z-order.
+        try
+        {
+            Topmost = true;
+            Activate();
+        }
+        finally { Topmost = false; }
+    }
+
+    // Called by App when Ctrl+C+C fires.
     public void OnCtrlCC()
     {
+        if (_stopped) return;
         // Ctrl+C+C fires right after another program copied, so the clipboard can still be busy.
         string text;
         try   { text = Clipboard.GetText().Trim(); }
-        catch (Exception) { SetStatus(Loc.StatusClipboardBusy); return; }
+        catch (Exception)
+        {
+            ShowForUser();
+            SetStatus(Loc.StatusClipboardBusy);
+            return;
+        }
         if (text.Length == 0) return;
 
-        Show();
-        WindowState = WindowState.Normal;
-        Activate();
-        SrcBox.Text = text;
+        ShowForUser();
+        SrcBox.Focus();
+        _ = TranslateClipboardTextAsync(text);
+    }
+
+    internal Task TranslateClipboardTextAsync(string text)
+    {
+        _loadingClipboard = true;
+        try { SrcBox.Text = text; }
+        finally { _loadingClipboard = false; }
         SrcBox.CaretIndex = text.Length;
         // _lastSrc is kept, so the same clipboard is not sent again when it is already
         // translated. A failed attempt is still retried, because TranslateAsync checks _failed.
         _debounce.Stop();
-        _ = TranslateAsync();
+        return TranslateAsync();
     }
 
     // ──────────────────────────── Minimize to tray ───────────────────────────────────

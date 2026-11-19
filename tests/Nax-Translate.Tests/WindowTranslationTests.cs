@@ -75,6 +75,8 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
     sealed class FakeChatGpt : IChatGptClient
     {
         public readonly List<PendingChatGpt> Requests = [];
+        public readonly TaskCompletionSource<PendingChatGpt> FirstRequest =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Warmups, Stops;
         public void WarmUp() => Warmups++;
         public void Stop() => Stops++;
@@ -85,6 +87,7 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
         {
             var request = new PendingChatGpt { Token = ct, Tone = tone, Text = text, Target = target, Source = source };
             Requests.Add(request);
+            FirstRequest.TrySetResult(request);
             return request.Answer.Task;
         }
     }
@@ -181,6 +184,40 @@ public sealed class WindowTranslationTests(WindowDispatcher dispatcher)
             if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
         }
     }
+
+    [Fact]
+    public Task typing_translates_automatically_after_the_pause() => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        h.Window.SrcBox.Text = "Hell";
+        h.Window.SrcBox.AppendText("o");
+        Assert.Empty(h.ChatGpt.Requests);
+
+        var request = await h.ChatGpt.FirstRequest.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("Hello", request.Text);
+        request.Answer.SetResult(("Hallo", "EN"));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal("Hallo", h.Window.TgtBox.Text);
+        Assert.Single(h.ChatGpt.Requests);
+    });
+
+    [Theory]
+    [InlineData("Hello", "Hallo")]
+    [InlineData("The train arrives tomorrow.", "Der Zug kommt morgen an.")]
+    public Task clipboard_text_starts_immediately_and_reuses_the_displayed_result(string text, string translation) => dispatcher.Run(async () =>
+    {
+        using var h = new Harness(chatgpt: true);
+        var run = h.Window.TranslateClipboardTextAsync(text);
+        var request = Assert.Single(h.ChatGpt.Requests);
+        Assert.Equal(text, request.Text);
+        Assert.Equal(text.Length, h.Window.SrcBox.CaretIndex);
+        request.Answer.SetResult((translation, "EN"));
+        await run;
+
+        await h.Window.TranslateClipboardTextAsync(text);
+        Assert.Equal(translation, h.Window.TgtBox.Text);
+        Assert.Single(h.ChatGpt.Requests);
+    });
 
     [Theory]
     [InlineData("source")]

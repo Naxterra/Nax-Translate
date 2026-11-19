@@ -174,12 +174,7 @@ public partial class App : Application
 
     internal void ShowMain()
     {
-        if (MainWindow is MainWindow w)
-        {
-            w.Show();
-            w.WindowState = WindowState.Normal;
-            w.Activate();
-        }
+        (MainWindow as MainWindow)?.ShowForUser();
     }
 
     void ExitApp()

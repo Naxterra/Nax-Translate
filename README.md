@@ -77,8 +77,7 @@ An installed Nax-DeepL is updated in place: the setup moves the program to the n
 | Action | How |
 |---|---|
 | Translate | Type in the left box to translate after a short pause, or paste text to start immediately. |
-| Force translate | `Ctrl+Enter` |
-| Translate clipboard | Press `Ctrl+C+C` anywhere on the system. |
+| Translate clipboard | Press `Ctrl+C+C` to bring the window forward and translate the copied text immediately. |
 | Switch languages | Use the dropdowns or click ⇌ to swap. |
 | Copy result | Click **📋 Kopieren / Copy**. |
 | Switch engine | Use the Classic, Next-gen, Claude and ChatGPT switch. |
