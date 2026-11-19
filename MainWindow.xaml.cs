@@ -972,6 +972,12 @@ public partial class MainWindow : Window
     {
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         if (!IsVisible) Show();
+
+        // A tray-hidden window can still be minimized at the Win32 level after WPF shows it.
+        // Restore the actual window before asking Windows to give it focus.
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+
         if (Activate() || Topmost) return;
 
         // Windows can decline focus when another app received Ctrl+C. Raise this window
@@ -983,6 +989,12 @@ public partial class MainWindow : Window
         }
         finally { Topmost = false; }
     }
+
+    const int SW_RESTORE = 9;
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool IsIconic(IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hwnd, int command);
 
     // Called by App when Ctrl+C+C fires.
     public void OnCtrlCC()
